@@ -158,7 +158,8 @@ impl Agent {
             }
 
             // Build and log the request
-            let thinking_config = Some(ThinkingConfig::enabled(10000));
+            // Use a larger thinking budget to encourage more thorough reasoning
+            let thinking_config = Some(ThinkingConfig::enabled(16000));
             self.log_api_request(&messages, &system_prompt, &tools, &thinking_config)?;
 
             // Call the LLM with extended thinking enabled

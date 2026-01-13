@@ -36,7 +36,7 @@ impl AnthropicProvider {
         let max_tokens = env::var("ANTHROPIC_MAX_TOKENS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(16000); // Higher default for extended thinking
+            .unwrap_or(32000); // Must be > thinking.budget_tokens (16000)
 
         tracing::info!("Using model: {}", model);
         tracing::info!("Max tokens: {}", max_tokens);
@@ -59,7 +59,7 @@ impl AnthropicProvider {
             client,
             api_key: api_key.into(),
             model: "claude-sonnet-4-5-20250929".to_string(),
-            max_tokens: 16000,
+            max_tokens: 32000,
         })
     }
 
@@ -139,6 +139,9 @@ impl AnthropicProvider {
         tracing::debug!("Tools count: {}", tools.len());
         tracing::debug!("Thinking enabled: {}", thinking.is_some());
 
+        // When thinking is enabled, temperature must be 1 (required by Anthropic API)
+        let temperature = if thinking.is_some() { Some(1.0) } else { None };
+
         let request = MessageRequest {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
@@ -147,7 +150,7 @@ impl AnthropicProvider {
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             thinking,
-            temperature: None,
+            temperature,
             stream: None,
         };
 

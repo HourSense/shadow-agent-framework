@@ -563,3 +563,136 @@ cargo run
 ✅ Compiles successfully
 ✅ All major components implemented
 ✅ Ready for testing
+
+---
+
+## 2026-01-14: Extended Thinking, Debugger, and Tool Refactoring
+
+### Extended Thinking Implementation
+
+Added support for Claude's extended thinking feature to improve reasoning quality.
+
+**Changes:**
+1. **ThinkingConfig** (`src/llm/types.rs`):
+   - Added `ThinkingConfig` struct with `type: "enabled"` and `budget_tokens`
+   - Added `Thinking` and `RedactedThinking` content block variants
+
+2. **Temperature Requirement Fix** (`src/llm/anthropic.rs`):
+   - When thinking is enabled, Anthropic API requires `temperature=1`
+   - Fixed by explicitly setting temperature when thinking config is present
+   ```rust
+   let temperature = if thinking.is_some() { Some(1.0) } else { None };
+   ```
+
+3. **Thinking Budget** (`src/agent/agent_loop.rs`):
+   - Increased thinking budget to 16000 tokens for thorough reasoning
+   ```rust
+   let thinking_config = Some(ThinkingConfig::enabled(16000));
+   ```
+
+4. **Console Display** (`src/cli/console.rs`):
+   - Added `print_thinking_block()` method to display thinking in formatted box
+   - Thinking displayed before assistant's main response
+
+### Debugger System
+
+Created comprehensive debug logging for all API interactions.
+
+**Location:** `src/debugger/mod.rs`
+
+**Features:**
+- Creates session folders with timestamps (e.g., `debugger/20260114_153045/`)
+- Logs all events to `events.jsonl` (append-only)
+- Individual JSON files for each event with sequence numbers
+- Event types: `api_request`, `api_response`, `tool_call`, `tool_result`
+
+**Session Structure:**
+```
+debugger/
+└── 20260114_153045/
+    ├── events.jsonl           # All events in order
+    ├── 000001_api_request.json
+    ├── 000002_api_response.json
+    ├── 000003_tool_call.json
+    └── 000004_tool_result.json
+```
+
+### Tool Refactoring
+
+Refactored all tools to match specific JSON schemas:
+
+**Old FileEditTool** → Split into:
+1. **ReadTool** (`src/tools/read_tool.rs`)
+   - Reads files with line numbers (cat -n format)
+   - Parameters: file_path, offset?, limit?
+   - No permission required (read-only)
+
+2. **EditTool** (`src/tools/edit_tool.rs`)
+   - Exact string replacement in files
+   - Parameters: file_path, old_string, new_string, replace_all?
+   - Requires permission
+
+3. **WriteTool** (`src/tools/write_tool.rs`)
+   - Creates or overwrites files
+   - Parameters: file_path, content
+   - Requires permission
+
+**New Search Tools:**
+4. **GlobTool** (`src/tools/glob_tool.rs`)
+   - Fast file pattern matching
+   - Parameters: pattern, path?
+   - No permission required
+
+5. **GrepTool** (`src/tools/grep_tool.rs`)
+   - Content search using ripgrep
+   - Parameters: pattern, path?, glob?, output_mode?, -A, -B, -C, -i, -n, etc.
+   - No permission required
+
+**Updated Tools:**
+6. **BashTool** (`src/tools/bash.rs`)
+   - Added optional timeout (max 600000ms)
+   - Added optional description for logging
+   - Default timeout: 120000ms (2 minutes)
+
+7. **TodoWriteTool** (`src/tools/todo.rs`)
+   - Updated schema with content, status, activeForm fields
+   - Shared state via `Arc<RwLock<Vec<TodoItem>>>`
+   - No permission required
+
+### Incremental Message Saving
+
+Modified agent loop to save messages incrementally after each tool call, rather than only at the end of a turn.
+
+**Changes to `src/agent/agent_loop.rs`:**
+- User message saved immediately after input
+- Tool results saved as they're processed
+- Messages appended to history.jsonl in real-time
+
+### Files Created/Modified
+
+**New Files:**
+- `src/debugger/mod.rs` - Debug logging system
+- `src/tools/read_tool.rs` - File reading tool
+- `src/tools/edit_tool.rs` - File editing tool
+- `src/tools/write_tool.rs` - File writing tool
+- `src/tools/glob_tool.rs` - Pattern matching tool
+- `src/tools/grep_tool.rs` - Content search tool
+
+**Deleted Files:**
+- `src/tools/file_edit.rs` - Replaced by Read/Edit/Write tools
+
+**Modified Files:**
+- `src/llm/anthropic.rs` - Temperature fix for thinking
+- `src/llm/types.rs` - Added Serialize to response types
+- `src/agent/agent_loop.rs` - Debugger integration, incremental saving
+- `src/tools/mod.rs` - Updated exports
+- `src/tools/bash.rs` - Added timeout/description
+- `src/tools/todo.rs` - Updated schema
+- `src/main.rs` - Register new tools, create debugger
+- `src/lib.rs` - Added debugger module
+
+### Build Status
+✅ Compiles successfully
+✅ Extended thinking working on every turn
+✅ Debugger captures all API interactions
+✅ All tools match specified schemas

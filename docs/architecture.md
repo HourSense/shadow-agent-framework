@@ -54,8 +54,12 @@ singapore-project/
 │       ├── tool.rs               # Tool trait
 │       ├── registry.rs           # ToolRegistry
 │       ├── bash.rs               # Bash command execution
-│       ├── file_edit.rs          # File operations
-│       └── todo.rs               # TODO list tool
+│       ├── read_tool.rs          # Read file contents
+│       ├── edit_tool.rs          # Edit files (str_replace)
+│       ├── write_tool.rs         # Write/create files
+│       ├── glob_tool.rs          # File pattern matching
+│       ├── grep_tool.rs          # Content search (ripgrep)
+│       └── todo.rs               # TodoWrite task tracking
 │
 ├── conversations/                # Conversation storage (gitignored)
 │   └── <uuid>/
@@ -170,38 +174,62 @@ pub trait Tool: Send + Sync {
 
 **Available Tools**
 
-| Tool | Commands | Description |
-|------|----------|-------------|
-| `bash` | (command) | Execute shell commands |
-| `file_edit` | `view`, `create`, `str_replace`, `glob`, `insert` | File operations |
-| `todo` | (todos array) | Task tracking with shared state |
+| Tool | Parameters | Description |
+|------|------------|-------------|
+| `Bash` | command, timeout?, description? | Execute shell commands with optional timeout |
+| `Read` | file_path, offset?, limit? | Read file contents with line numbers |
+| `Edit` | file_path, old_string, new_string, replace_all? | Perform string replacements in files |
+| `Write` | file_path, content | Write/create files |
+| `Glob` | pattern, path? | Fast file pattern matching |
+| `Grep` | pattern, path?, glob?, output_mode?, etc. | Content search using ripgrep |
+| `TodoWrite` | todos[] | Task tracking with persisted state |
 
-**TODO Tool**
+**Bash Tool**
+- Executes shell commands with optional timeout (default 2 min, max 10 min)
+- Optional description for logging
+- Output truncated at 30KB
+
+**Read Tool**
+- Reads files with line numbers (cat -n format)
+- Default limit: 2000 lines
+- Supports offset and limit for large files
+- No permission required (read-only)
+
+**Edit Tool**
+- Exact string replacement in files
+- Fails if old_string is not unique (unless replace_all=true)
+- Requires permission
+
+**Write Tool**
+- Creates or overwrites files
+- Creates parent directories automatically
+- Requires permission
+
+**Glob Tool**
+- Fast file pattern matching (e.g., `**/*.rs`)
+- Results sorted by modification time
+- No permission required (read-only)
+
+**Grep Tool**
+- Uses ripgrep for fast content search
+- Output modes: `content`, `files_with_matches`, `count`
+- Supports context lines (-A, -B, -C), case insensitive, multiline
+- No permission required (read-only)
+
+**TodoWrite Tool**
 - Maintains a shared todo list across the agent session
 - Uses `Arc<RwLock<Vec<TodoItem>>>` for thread-safe shared state
-- Does not require permission (agent can update freely)
+- Does not require permission
 - Input format:
 ```json
 {
   "todos": [
-    {"index": 1, "completed": false, "task": "First task"},
-    {"index": 2, "completed": true, "task": "Second task", "additional_details": "Optional details"}
+    {"content": "First task", "status": "pending", "activeForm": "Working on first task"},
+    {"content": "Second task", "status": "completed", "activeForm": "Completing second task"}
   ]
 }
 ```
 
-**Bash Tool**
-- Fresh shell for each command (no session persistence)
-- Configurable working directory
-- Output truncation (50KB limit)
-- Returns exit code and combined stdout/stderr
-
-**File Edit Tool**
-- `view`: Read file with line numbers, optional range
-- `create`: Create new files with content
-- `str_replace`: Replace text (exact match, single occurrence only)
-- `glob`: Search for files by pattern
-- `insert`: Insert text at specific line
 
 ### 4. Permission System (`src/permissions/`)
 

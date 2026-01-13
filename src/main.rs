@@ -4,7 +4,10 @@ use singapore_project::context::ContextManager;
 use singapore_project::debugger::Debugger;
 use singapore_project::llm::AnthropicProvider;
 use singapore_project::logging;
-use singapore_project::tools::{new_todo_list, BashTool, FileEditTool, TodoTool, ToolRegistry};
+use singapore_project::tools::{
+    new_todo_list, BashTool, EditTool, GlobTool, GrepTool, ReadTool, TodoWriteTool, ToolRegistry,
+    WriteTool,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -21,12 +24,22 @@ async fn main() -> anyhow::Result<()> {
 
     // Create tool registry with available tools
     let mut tool_registry = ToolRegistry::new();
-    tool_registry.register(BashTool::new()?);
-    tool_registry.register(FileEditTool::new()?);
 
-    // Create shared todo list and register TODO tool
+    // Core tools
+    tool_registry.register(BashTool::new()?);
+
+    // File operations (split tools)
+    tool_registry.register(ReadTool::new()?);
+    tool_registry.register(EditTool::new()?);
+    tool_registry.register(WriteTool::new()?);
+
+    // Search tools
+    tool_registry.register(GlobTool::new()?);
+    tool_registry.register(GrepTool::new()?);
+
+    // Task management
     let todo_list = new_todo_list();
-    tool_registry.register(TodoTool::new(todo_list));
+    tool_registry.register(TodoWriteTool::new(todo_list));
 
     tracing::info!("Registered {} tools", tool_registry.len());
 

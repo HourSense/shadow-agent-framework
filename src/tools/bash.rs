@@ -1,33 +1,41 @@
 //! Bash tool for executing shell commands
 //!
-//! This tool executes bash commands without session persistence.
-//! Each command runs in a fresh shell starting from the working directory.
+//! This tool executes bash commands with optional timeout and description.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::process::Stdio;
+use std::time::Duration;
 use tokio::process::Command;
+use tokio::time::timeout;
 
 use super::tool::{Tool, ToolInfo, ToolResult};
 use crate::llm::{ToolDefinition, ToolInputSchema};
+
+/// Default timeout in milliseconds (2 minutes)
+const DEFAULT_TIMEOUT_MS: u64 = 120000;
+/// Maximum timeout in milliseconds (10 minutes)
+const MAX_TIMEOUT_MS: u64 = 600000;
+/// Maximum output length in characters
+const MAX_OUTPUT_LENGTH: usize = 30000;
 
 /// Bash tool for executing shell commands
 pub struct BashTool {
     /// Working directory for command execution
     working_dir: String,
-    /// Maximum output length in characters
-    max_output_length: usize,
 }
 
 /// Input for the bash tool
 #[derive(Debug, Deserialize)]
 struct BashInput {
-    /// The command to execute
+    /// The command to execute (required)
     command: String,
-    /// Optional working directory override
-    working_dir: Option<String>,
+    /// Optional timeout in milliseconds (max 600000)
+    timeout: Option<u64>,
+    /// Optional description of what this command does
+    description: Option<String>,
 }
 
 impl BashTool {
@@ -37,39 +45,41 @@ impl BashTool {
             .to_string_lossy()
             .to_string();
 
-        Ok(Self {
-            working_dir,
-            max_output_length: 50000,
-        })
+        Ok(Self { working_dir })
     }
 
     /// Create a new Bash tool with a specific working directory
     pub fn with_working_dir(working_dir: impl Into<String>) -> Self {
         Self {
             working_dir: working_dir.into(),
-            max_output_length: 50000,
         }
     }
 
-    /// Set the maximum output length
-    pub fn with_max_output_length(mut self, max_length: usize) -> Self {
-        self.max_output_length = max_length;
-        self
-    }
-
-    /// Execute a bash command and return the output
-    async fn run_command(&self, command: &str, working_dir: &str) -> Result<(String, i32)> {
+    /// Execute a bash command with optional timeout
+    async fn run_command(&self, command: &str, timeout_ms: u64) -> Result<(String, i32)> {
         tracing::info!("Executing bash command: {}", command);
-        tracing::debug!("Working directory: {}", working_dir);
+        tracing::debug!("Working directory: {}", self.working_dir);
+        tracing::debug!("Timeout: {}ms", timeout_ms);
 
-        let output = Command::new("bash")
+        let duration = Duration::from_millis(timeout_ms.min(MAX_TIMEOUT_MS));
+
+        let output_future = Command::new("bash")
             .arg("-c")
             .arg(command)
-            .current_dir(working_dir)
+            .current_dir(&self.working_dir)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .output()
-            .await?;
+            .output();
+
+        let output = match timeout(duration, output_future).await {
+            Ok(result) => result?,
+            Err(_) => {
+                return Ok((
+                    format!("Command timed out after {}ms", timeout_ms),
+                    -1,
+                ));
+            }
+        };
 
         let exit_code = output.status.code().unwrap_or(-1);
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -82,15 +92,15 @@ impl BashTool {
         }
         if !stderr.is_empty() {
             if !result.is_empty() {
-                result.push_str("\n");
+                result.push('\n');
             }
             result.push_str("STDERR:\n");
             result.push_str(&stderr);
         }
 
         // Truncate if too long
-        if result.len() > self.max_output_length {
-            result.truncate(self.max_output_length);
+        if result.len() > MAX_OUTPUT_LENGTH {
+            result.truncate(MAX_OUTPUT_LENGTH);
             result.push_str("\n... (output truncated)");
         }
 
@@ -110,29 +120,38 @@ impl Default for BashTool {
 #[async_trait]
 impl Tool for BashTool {
     fn name(&self) -> &str {
-        "bash"
+        "Bash"
     }
 
     fn description(&self) -> &str {
-        "Execute a bash command in the shell. Each command runs in a fresh shell without session persistence."
+        "Execute a bash command in the shell. Use for terminal operations like git, npm, docker, etc."
     }
 
     fn definition(&self) -> ToolDefinition {
         use crate::llm::types::CustomTool;
 
         ToolDefinition::Custom(CustomTool {
-            name: "bash".to_string(),
-            description: Some(self.description().to_string()),
+            name: "Bash".to_string(),
+            description: Some(
+                "Executes a given bash command in a persistent shell session with optional timeout. \
+                Use this for terminal operations like git, npm, docker, etc. \
+                DO NOT use it for file operations (reading, writing, editing) - use the specialized tools instead."
+                    .to_string(),
+            ),
             input_schema: ToolInputSchema {
                 schema_type: "object".to_string(),
                 properties: Some(json!({
                     "command": {
                         "type": "string",
-                        "description": "The bash command to execute"
+                        "description": "The command to execute"
                     },
-                    "working_dir": {
+                    "timeout": {
+                        "type": "number",
+                        "description": "Optional timeout in milliseconds (max 600000). Default is 120000ms (2 minutes)."
+                    },
+                    "description": {
                         "type": "string",
-                        "description": "Optional working directory for the command. Defaults to the project root."
+                        "description": "Clear, concise description of what this command does in 5-10 words, in active voice."
                     }
                 })),
                 required: Some(vec!["command".to_string()]),
@@ -147,16 +166,17 @@ impl Tool for BashTool {
             .and_then(|v| v.as_str())
             .unwrap_or("<unknown command>");
 
-        let working_dir = input
-            .get("working_dir")
+        let description = input
+            .get("description")
             .and_then(|v| v.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| self.working_dir.clone());
+            .map(String::from);
+
+        let action = description.unwrap_or_else(|| format!("Execute: {}", command));
 
         ToolInfo {
-            name: "bash".to_string(),
-            action_description: format!("Execute command: {}", command),
-            details: Some(format!("Working directory: {}", working_dir)),
+            name: "Bash".to_string(),
+            action_description: action,
+            details: Some(format!("Command: {}", command)),
         }
     }
 
@@ -164,12 +184,13 @@ impl Tool for BashTool {
         let bash_input: BashInput = serde_json::from_value(input.clone())
             .map_err(|e| anyhow::anyhow!("Invalid bash input: {}", e))?;
 
-        let working_dir = bash_input
-            .working_dir
-            .as_deref()
-            .unwrap_or(&self.working_dir);
+        let timeout_ms = bash_input.timeout.unwrap_or(DEFAULT_TIMEOUT_MS);
 
-        match self.run_command(&bash_input.command, working_dir).await {
+        if let Some(ref desc) = bash_input.description {
+            tracing::info!("Command description: {}", desc);
+        }
+
+        match self.run_command(&bash_input.command, timeout_ms).await {
             Ok((output, exit_code)) => {
                 if exit_code == 0 {
                     if output.is_empty() {
@@ -200,7 +221,10 @@ mod tests {
     #[tokio::test]
     async fn test_echo_command() {
         let tool = BashTool::with_working_dir(".");
-        let input = json!({ "command": "echo 'hello world'" });
+        let input = json!({
+            "command": "echo 'hello world'",
+            "description": "Print hello world"
+        });
         let result = tool.execute(&input).await.unwrap();
         assert!(!result.is_error);
         assert!(result.output.contains("hello world"));
@@ -213,5 +237,17 @@ mod tests {
         let result = tool.execute(&input).await.unwrap();
         assert!(result.is_error);
         assert!(result.output.contains("exit code 1"));
+    }
+
+    #[tokio::test]
+    async fn test_timeout() {
+        let tool = BashTool::with_working_dir(".");
+        let input = json!({
+            "command": "sleep 5",
+            "timeout": 100
+        });
+        let result = tool.execute(&input).await.unwrap();
+        assert!(result.is_error);
+        assert!(result.output.contains("timed out"));
     }
 }
