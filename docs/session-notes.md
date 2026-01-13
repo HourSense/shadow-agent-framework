@@ -696,3 +696,24 @@ Modified agent loop to save messages incrementally after each tool call, rather 
 ✅ Extended thinking working on every turn
 ✅ Debugger captures all API interactions
 ✅ All tools match specified schemas
+
+---
+
+## 2026-01-14: Interleaved Thinking Beta
+
+### Issue Fixed
+- `max_tokens` must be greater than `thinking.budget_tokens`
+- Increased `max_tokens` from 16000 to 32000 (thinking budget is 16000)
+
+### Interleaved Thinking
+Added beta header for interleaved thinking, which allows Claude to think between tool calls, not just at the beginning of a response.
+
+**Header added in `src/llm/anthropic.rs`:**
+```rust
+.header("anthropic-beta", "interleaved-thinking-2025-05-14")
+```
+
+This enables Claude to reason throughout the entire agentic loop, providing better decision-making between tool executions.
+
+### Build Status
+✅ Compiles successfully

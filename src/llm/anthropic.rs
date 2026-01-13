@@ -172,6 +172,7 @@ impl AnthropicProvider {
             .header("Content-Type", "application/json")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "interleaved-thinking-2025-05-14")
             .body(request_json)
             .send()
             .await
