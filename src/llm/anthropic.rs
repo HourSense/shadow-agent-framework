@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use anthropic_sdk::{Anthropic, MessageCreateBuilder};
+use crate::conversation::Message;
 
 /// Anthropic LLM provider wrapper
 pub struct AnthropicProvider {
@@ -54,26 +55,46 @@ impl AnthropicProvider {
     // TODO: Implement streaming once we figure out the correct SDK API
     // For now, we'll use send_message which gets the complete response
 
-    /// Send a message and get the complete response
+    /// Send a message with conversation history and get the complete response
     pub async fn send_message(
         &self,
         user_message: &str,
+        conversation_history: &[Message],
         system_prompt: Option<&str>,
     ) -> Result<String> {
         tracing::info!("Sending message to Anthropic API");
         tracing::debug!("User message: {}", user_message);
+        tracing::debug!("Conversation history length: {} messages", conversation_history.len());
         tracing::debug!("System prompt: {:?}", system_prompt);
         tracing::debug!("Model: {}", self.model);
         tracing::debug!("Max tokens: {}", self.max_tokens);
 
-        let mut builder = MessageCreateBuilder::new(&self.model, self.max_tokens)
-            .user(user_message);
+        let mut builder = MessageCreateBuilder::new(&self.model, self.max_tokens);
 
+        // Add system prompt if provided
         if let Some(system) = system_prompt {
             builder = builder.system(system);
         }
 
-        tracing::debug!("Calling Anthropic API...");
+        // Add conversation history
+        for msg in conversation_history {
+            match msg.role.as_str() {
+                "user" => {
+                    builder = builder.user(msg.content.as_str());
+                }
+                "assistant" => {
+                    builder = builder.assistant(msg.content.as_str());
+                }
+                _ => {
+                    tracing::warn!("Skipping message with unknown role: {}", msg.role);
+                }
+            }
+        }
+
+        // Add current user message
+        builder = builder.user(user_message);
+
+        tracing::debug!("Calling Anthropic API with {} total messages...", conversation_history.len() + 1);
 
         let response = self
             .client

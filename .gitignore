@@ -2,3 +2,6 @@
 .env
 Cargo.lock
 logs/
+
+# Conversations (remove this line if you want to track conversation history in git)
+conversations/

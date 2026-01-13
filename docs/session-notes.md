@@ -205,3 +205,179 @@ This will help identify if the issue is:
 - src/agent/agent_loop.rs - added logging statements
 
 **Update**: Disabled console logging to avoid interfering with CLI. Logs now only go to `logs/agent.log`.
+
+---
+
+## 2026-01-14: Conversation History System
+
+### Implementation
+
+Built a complete conversation persistence system with file-based storage.
+
+**Features:**
+1. **UUID-based Conversations**: Each conversation gets a unique identifier
+2. **Structured Storage**: Organized folder structure per conversation
+3. **Metadata Tracking**: JSON file with timestamps and settings
+4. **JSONL History**: Efficient message storage in JSON Lines format
+5. **Automatic Persistence**: All messages saved automatically
+
+### File Structure
+
+```
+conversations/
+└── <uuid>/
+    ├── metadata.json     # Conversation metadata
+    └── history.jsonl     # Message history (one JSON per line)
+```
+
+**metadata.json format:**
+```json
+{
+  "id": "uuid-here",
+  "created_at": "2026-01-14T10:30:00Z",
+  "updated_at": "2026-01-14T10:35:00Z",
+  "model_provider": "anthropic",
+  "title": null
+}
+```
+
+**history.jsonl format:**
+```jsonl
+{"role":"user","content":"message text"}
+{"role":"assistant","content":"response text"}
+```
+
+### Modules Created
+
+1. **conversation/message.rs**: Message struct with Anthropic-compatible format
+   - `Message::user()`, `Message::assistant()`, `Message::system()`
+   - JSON serialization/deserialization
+
+2. **conversation/conversation.rs**: Main conversation management
+   - `new()` - Create new conversation with UUID
+   - `add_message()` - Append to history.jsonl
+   - `add_user_message()`, `add_assistant_message()` - Convenience methods
+   - `get_messages()` - Read all messages
+   - `save_metadata()` - Update metadata.json
+   - `list_all()` - List all conversation IDs (for future use)
+   - `load()` - Load existing conversation (for future use)
+   - `delete()` - Remove conversation
+
+### Integration with Agent
+
+**Agent Changes:**
+- Added `Conversation` field to Agent struct
+- Creates new conversation on initialization
+- Saves user messages before sending to LLM
+- Saves assistant responses after receiving from LLM
+- Updates metadata timestamps automatically
+
+**Behavior:**
+- Every run creates a NEW conversation
+- All messages automatically persisted
+- No manual save required
+- Conversation ID logged on startup
+
+### Dependencies Added
+
+- `uuid` (v1.0) - UUID generation
+- `chrono` (v0.4) - Timestamp handling
+
+### Future Enhancements (Not Yet Implemented)
+
+- Resume previous conversations
+- List and search conversations via CLI
+- Auto-generate conversation titles
+- Export conversations to markdown/PDF
+- Conversation branching
+
+### Files Created/Modified
+
+- Cargo.toml - added uuid, chrono
+- .gitignore - excluded conversations/
+- src/lib.rs - added conversation module
+- src/conversation/mod.rs - module declarations
+- src/conversation/message.rs - Message struct
+- src/conversation/conversation.rs - Conversation struct
+- src/agent/agent_loop.rs - integrated conversation storage
+- src/main.rs - handle Result types
+- docs/conversation-system.md - comprehensive documentation
+
+### Build Status
+✅ Compiles successfully
+✅ Ready to test
+
+### Testing
+
+Run the agent and check:
+1. `conversations/` folder is created
+2. New folder with UUID appears
+3. `metadata.json` contains correct data
+4. `history.jsonl` contains messages in JSONL format
+5. Timestamps update on each message
+
+View conversation:
+```bash
+ls conversations/
+cat conversations/<uuid>/metadata.json
+cat conversations/<uuid>/history.jsonl
+```
+
+---
+
+## 2026-01-14: Fixed Conversation Context
+
+### Problem
+The agent was storing conversation history but NOT sending it to the LLM. Each message was processed in isolation without context. When asking "summarize this conversation", the LLM had no previous messages to reference.
+
+### Solution
+
+**Modified LLM Provider:**
+- Updated `send_message()` to accept `conversation_history: &[Message]` parameter
+- Builds the API request with full conversation history using chained `.user()` and `.assistant()` calls
+- Sends complete context to Anthropic API
+
+**Modified Agent:**
+- Gets conversation history BEFORE processing new message
+- Passes history to LLM along with current message
+- Saves messages to conversation AFTER getting response
+
+**Flow:**
+1. User sends message
+2. Agent retrieves all previous messages from conversation
+3. Agent calls LLM with: history + current message + system prompt
+4. LLM responds with full context awareness
+5. Agent saves both user message and assistant response
+
+### Changes Made
+
+**src/llm/anthropic.rs:**
+- Added `use crate::conversation::Message`
+- Modified `send_message()` signature to include `conversation_history: &[Message]`
+- Iterates through history and adds each message to builder
+- Logs total message count sent to API
+
+**src/agent/agent_loop.rs:**
+- Calls `conversation.get_messages()` to retrieve history
+- Passes history to `send_message()`
+- Reordered: get history → call LLM → save messages
+
+### Build Status
+✅ Compiles successfully
+✅ Conversation context now works
+
+### Testing
+
+Now when you:
+1. Say "hi"
+2. Say "how are you?"
+3. Say "summarize this conversation"
+
+The LLM will actually see the previous messages and can summarize them!
+
+Check logs to verify:
+```bash
+tail -f logs/agent.log
+# Should show: "Retrieved X previous messages from conversation history"
+# Should show: "Calling Anthropic API with X total messages..."
+```

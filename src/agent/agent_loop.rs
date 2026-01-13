@@ -1,4 +1,5 @@
 use crate::cli::Console;
+use crate::conversation::Conversation;
 use crate::llm::AnthropicProvider;
 use anyhow::Result;
 
@@ -6,24 +7,37 @@ use anyhow::Result;
 pub struct Agent {
     console: Console,
     llm_provider: AnthropicProvider,
+    conversation: Conversation,
     system_prompt: Option<String>,
 }
 
 impl Agent {
     /// Create a new Agent with a console and LLM provider
-    pub fn new(console: Console, llm_provider: AnthropicProvider) -> Self {
+    /// Automatically creates a new conversation
+    pub fn new(console: Console, llm_provider: AnthropicProvider) -> Result<Self> {
         tracing::info!("Creating new Agent");
-        Self {
+
+        // Create a new conversation
+        let conversation = Conversation::new()?;
+        tracing::info!("Conversation initialized: {}", conversation.id());
+
+        Ok(Self {
             console,
             llm_provider,
+            conversation,
             system_prompt: None,
-        }
+        })
     }
 
     /// Set a system prompt for the agent
-    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Self {
+    pub fn with_system_prompt(mut self, prompt: impl Into<String>) -> Result<Self> {
         self.system_prompt = Some(prompt.into());
-        self
+        Ok(self)
+    }
+
+    /// Get the conversation ID
+    pub fn conversation_id(&self) -> &str {
+        self.conversation.id()
     }
 
     /// Get a reference to the console
@@ -32,7 +46,7 @@ impl Agent {
     }
 
     /// Run the main agent loop
-    pub async fn run(&self) -> Result<()> {
+    pub async fn run(&mut self) -> Result<()> {
         tracing::info!("Starting agent loop");
         self.console.print_banner();
 
@@ -83,13 +97,17 @@ impl Agent {
     }
 
     /// Process a single user message
-    async fn process_message(&self, user_message: &str) -> Result<()> {
+    async fn process_message(&mut self, user_message: &str) -> Result<()> {
         tracing::debug!("Processing message: {}", user_message);
 
-        // Get the complete response (TODO: add streaming support later)
+        // Get conversation history before adding new message
+        let history = self.conversation.get_messages()?;
+        tracing::debug!("Retrieved {} previous messages from conversation history", history.len());
+
+        // Get the complete response with conversation context
         let response = self
             .llm_provider
-            .send_message(user_message, self.system_prompt.as_deref())
+            .send_message(user_message, &history, self.system_prompt.as_deref())
             .await
             .map_err(|e| {
                 tracing::error!("Failed to get LLM response: {:?}", e);
@@ -97,6 +115,14 @@ impl Agent {
             })?;
 
         tracing::debug!("Response received, length: {} chars", response.len());
+
+        // Save user message to conversation history
+        self.conversation.add_user_message(user_message)?;
+        tracing::debug!("User message saved to conversation history");
+
+        // Save assistant response to conversation history
+        self.conversation.add_assistant_message(&response)?;
+        tracing::debug!("Assistant message saved to conversation history");
 
         // Print the response
         self.console.print_assistant(&response);

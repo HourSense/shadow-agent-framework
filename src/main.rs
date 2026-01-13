@@ -17,8 +17,10 @@ async fn main() -> anyhow::Result<()> {
     let llm_provider = AnthropicProvider::from_env()?;
 
     // Create agent with console and LLM provider
-    let agent = Agent::new(console, llm_provider)
-        .with_system_prompt("You are a helpful coding assistant.");
+    let mut agent = Agent::new(console, llm_provider)?
+        .with_system_prompt("You are a helpful coding assistant.")?;
+
+    tracing::info!("Agent initialized with conversation ID: {}", agent.conversation_id());
 
     // Run the agent loop
     agent.run().await?;
