@@ -42,6 +42,9 @@ singapore-project/
 │   │
 │   ├── logging.rs                # Tracing/logging setup
 │   │
+│   ├── debugger/                 # Debug logging
+│   │   └── mod.rs                # Request/response/tool logging
+│   │
 │   ├── permissions/              # Permission system
 │   │   ├── mod.rs
 │   │   └── manager.rs            # PermissionManager
@@ -61,6 +64,14 @@ singapore-project/
 │
 ├── logs/                         # Log files (gitignored)
 │   └── agent.log
+│
+├── debugger/                     # Debug session logs (gitignored)
+│   └── <YYYYMMDD_HHMMSS>/        # Session folder
+│       ├── events.jsonl          # All events in sequence
+│       ├── 000001_api_request.json
+│       ├── 000002_api_response.json
+│       ├── 000003_tool_call.json
+│       └── 000004_tool_result.json
 │
 └── docs/                         # Documentation
     ├── architecture.md           # This file
@@ -299,6 +310,35 @@ RUST_LOG=debug cargo run
 # Trace level (maximum verbosity)
 RUST_LOG=trace cargo run
 ```
+
+### 9. Debugger (`src/debugger/mod.rs`)
+
+Stores detailed logs of all API interactions and tool executions for debugging.
+
+**Session Structure**
+```
+debugger/
+└── 20260114_153045/              # Session timestamp
+    ├── events.jsonl              # All events in order (append-only)
+    ├── 000001_api_request.json   # Full API request
+    ├── 000002_api_response.json  # Full API response
+    ├── 000003_tool_call.json     # Tool invocation
+    └── 000004_tool_result.json   # Tool output
+```
+
+**Event Types**
+| Event | Description |
+|-------|-------------|
+| `api_request` | Full MessageRequest sent to Anthropic |
+| `api_response` | Full MessageResponse received |
+| `tool_call` | Tool name and input before execution |
+| `tool_result` | Tool output and error status |
+
+**Features**
+- Automatic session folders with timestamps
+- Sequence numbers for event ordering
+- Both individual JSON files and combined JSONL log
+- Full request/response capture for debugging API issues
 
 ## Data Flow
 

@@ -1,6 +1,7 @@
 use singapore_project::agent::{Agent, default_system_prompt};
 use singapore_project::cli::Console;
 use singapore_project::context::ContextManager;
+use singapore_project::debugger::Debugger;
 use singapore_project::llm::AnthropicProvider;
 use singapore_project::logging;
 use singapore_project::tools::{new_todo_list, BashTool, FileEditTool, TodoTool, ToolRegistry};
@@ -32,8 +33,12 @@ async fn main() -> anyhow::Result<()> {
     // Create context manager with system prompt
     let context_manager = ContextManager::new(default_system_prompt());
 
+    // Create debugger for logging all requests/responses
+    let debugger = Debugger::new()?;
+    tracing::info!("Debugger session: {:?}", debugger.session_dir());
+
     // Create agent with all components
-    let mut agent = Agent::new(console, llm_provider, tool_registry, context_manager)?;
+    let mut agent = Agent::new(console, llm_provider, tool_registry, context_manager, debugger)?;
 
     tracing::info!(
         "Agent initialized with conversation ID: {}",

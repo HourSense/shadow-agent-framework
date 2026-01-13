@@ -7,9 +7,10 @@
 use crate::cli::Console;
 use crate::context::ContextManager;
 use crate::conversation::Conversation;
+use crate::debugger::Debugger;
 use crate::llm::{
-    AnthropicProvider, ContentBlock, Message, MessageResponse, StopReason, ThinkingConfig,
-    ToolChoice,
+    AnthropicProvider, ContentBlock, Message, MessageRequest, MessageResponse, StopReason,
+    ThinkingConfig, ToolChoice, ToolDefinition,
 };
 use crate::permissions::{PermissionDecision, PermissionManager, PermissionRequest};
 use crate::tools::ToolRegistry;
@@ -26,6 +27,7 @@ pub struct Agent {
     tool_registry: ToolRegistry,
     permission_manager: PermissionManager,
     context_manager: ContextManager,
+    debugger: Debugger,
 }
 
 impl Agent {
@@ -35,11 +37,16 @@ impl Agent {
         llm_provider: AnthropicProvider,
         tool_registry: ToolRegistry,
         context_manager: ContextManager,
+        debugger: Debugger,
     ) -> Result<Self> {
         tracing::info!("Creating new Agent");
 
         let conversation = Conversation::new()?;
         tracing::info!("Conversation initialized: {}", conversation.id());
+
+        if debugger.is_enabled() {
+            tracing::info!("Debugger enabled: {:?}", debugger.session_dir());
+        }
 
         Ok(Self {
             console,
@@ -48,6 +55,7 @@ impl Agent {
             tool_registry,
             permission_manager: PermissionManager::new(),
             context_manager,
+            debugger,
         })
     }
 
@@ -123,7 +131,11 @@ impl Agent {
         let mut messages: Vec<Message> = history;
 
         // Add the user message
-        messages.push(Message::user(user_message));
+        let user_msg = Message::user(user_message);
+        messages.push(user_msg.clone());
+
+        // Save the user message immediately
+        self.conversation.add_message_raw(&user_msg)?;
 
         // Get tool definitions
         let tools = self.tool_registry.get_definitions();
@@ -145,6 +157,10 @@ impl Agent {
                 break;
             }
 
+            // Build and log the request
+            let thinking_config = Some(ThinkingConfig::enabled(10000));
+            self.log_api_request(&messages, &system_prompt, &tools, &thinking_config)?;
+
             // Call the LLM with extended thinking enabled
             let response = self
                 .llm_provider
@@ -153,15 +169,21 @@ impl Agent {
                     Some(&system_prompt),
                     tools.clone(),
                     Some(ToolChoice::auto()),
-                    Some(ThinkingConfig::enabled(10000)),
+                    thinking_config,
                 )
                 .await?;
+
+            // Log the response
+            self.debugger.log_api_response(&response)?;
 
             // Process the response
             let (should_continue, new_messages) = self.process_response(&response).await?;
 
-            // Add new messages to the conversation
-            messages.extend(new_messages);
+            // Add new messages to the conversation and save incrementally
+            for msg in &new_messages {
+                messages.push(msg.clone());
+                self.conversation.add_message_raw(msg)?;
+            }
 
             if !should_continue {
                 // Agent is done with this turn
@@ -169,10 +191,34 @@ impl Agent {
             }
         }
 
-        // Save the conversation history
-        self.save_messages(&messages).await?;
-
         Ok(())
+    }
+
+    /// Log an API request to the debugger
+    fn log_api_request(
+        &self,
+        messages: &[Message],
+        system_prompt: &str,
+        tools: &[ToolDefinition],
+        thinking: &Option<ThinkingConfig>,
+    ) -> Result<()> {
+        let request = MessageRequest {
+            model: self.llm_provider.model().to_string(),
+            max_tokens: self.llm_provider.max_tokens(),
+            messages: messages.to_vec(),
+            system: Some(system_prompt.to_string()),
+            tools: if tools.is_empty() {
+                None
+            } else {
+                Some(tools.to_vec())
+            },
+            tool_choice: Some(ToolChoice::auto()),
+            thinking: thinking.clone(),
+            temperature: None,
+            stream: None,
+        };
+
+        self.debugger.log_api_request(&request)
     }
 
     /// Process a response from the LLM
@@ -196,6 +242,9 @@ impl Agent {
                 ContentBlock::ToolUse { id, name, input } => {
                     has_tool_use = true;
                     tracing::info!("Tool use requested: {} ({})", name, id);
+
+                    // Log the tool call to debugger
+                    let _ = self.debugger.log_tool_call(id, name, input);
 
                     // Get tool info for permission prompt
                     let tool_info = self.tool_registry.get_tool_info(name, input);
@@ -251,6 +300,13 @@ impl Agent {
                         match self.tool_registry.execute(name, input).await {
                             Ok(result) => {
                                 self.console.print_tool_result(&result.output, result.is_error);
+                                // Log tool result to debugger
+                                let _ = self.debugger.log_tool_result(
+                                    id,
+                                    name,
+                                    &result.output,
+                                    result.is_error,
+                                );
                                 ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: Some(result.output),
@@ -260,6 +316,10 @@ impl Agent {
                             Err(e) => {
                                 let error_msg = format!("Tool execution failed: {}", e);
                                 self.console.print_tool_result(&error_msg, true);
+                                // Log tool error to debugger
+                                let _ =
+                                    self.debugger
+                                        .log_tool_result(id, name, &error_msg, true);
                                 ContentBlock::ToolResult {
                                     tool_use_id: id.clone(),
                                     content: Some(error_msg),
@@ -269,9 +329,11 @@ impl Agent {
                         }
                     } else {
                         // Permission denied
+                        let denied_msg = "Permission denied by user";
+                        let _ = self.debugger.log_tool_result(id, name, denied_msg, true);
                         ContentBlock::ToolResult {
                             tool_use_id: id.clone(),
-                            content: Some("Permission denied by user".to_string()),
+                            content: Some(denied_msg.to_string()),
                             is_error: Some(true),
                         }
                     };
@@ -309,20 +371,5 @@ impl Agent {
         let should_continue = matches!(response.stop_reason, Some(StopReason::ToolUse));
 
         Ok((should_continue, new_messages))
-    }
-
-    /// Save messages to the conversation history
-    async fn save_messages(&mut self, messages: &[Message]) -> Result<()> {
-        // Get the current message count to know what's new
-        let current_count = self.conversation.message_count()?;
-
-        // Save all new messages
-        for (i, msg) in messages.iter().enumerate() {
-            if i >= current_count {
-                self.conversation.add_message_raw(msg)?;
-            }
-        }
-
-        Ok(())
     }
 }

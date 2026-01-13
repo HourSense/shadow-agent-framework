@@ -412,7 +412,7 @@ impl ToolChoice {
 // ============================================================================
 
 /// Response from the Anthropic Messages API
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageResponse {
     /// Unique message ID
     pub id: String,
@@ -470,7 +470,7 @@ impl MessageResponse {
 }
 
 /// Reason why the model stopped generating
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// Model reached a natural stopping point
@@ -488,7 +488,7 @@ pub enum StopReason {
 }
 
 /// Token usage information
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Usage {
     /// Input tokens used
     pub input_tokens: u32,
