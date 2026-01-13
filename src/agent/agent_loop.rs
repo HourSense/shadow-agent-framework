@@ -4,16 +4,17 @@
 //! - Outer loop: User conversation (user input → agent response)
 //! - Inner loop: Tool execution (agent requests tool → execute → continue)
 
+use crate::agent::todo_tracker::TodoTracker;
 use crate::cli::Console;
 use crate::context::ContextManager;
 use crate::conversation::Conversation;
 use crate::debugger::Debugger;
 use crate::llm::{
-    AnthropicProvider, ContentBlock, Message, MessageRequest, MessageResponse, StopReason,
-    ThinkingConfig, ToolChoice, ToolDefinition,
+    AnthropicProvider, ContentBlock, Message, MessageContent, MessageRequest, MessageResponse,
+    StopReason, ThinkingConfig, ToolChoice, ToolDefinition,
 };
 use crate::permissions::{PermissionDecision, PermissionManager, PermissionRequest};
-use crate::tools::ToolRegistry;
+use crate::tools::{TodoList, ToolRegistry};
 use anyhow::Result;
 
 /// Maximum number of tool calls in a single turn
@@ -28,6 +29,7 @@ pub struct Agent {
     permission_manager: PermissionManager,
     context_manager: ContextManager,
     debugger: Debugger,
+    todo_tracker: TodoTracker,
 }
 
 impl Agent {
@@ -38,6 +40,7 @@ impl Agent {
         tool_registry: ToolRegistry,
         context_manager: ContextManager,
         debugger: Debugger,
+        todo_list: TodoList,
     ) -> Result<Self> {
         tracing::info!("Creating new Agent");
 
@@ -48,6 +51,8 @@ impl Agent {
             tracing::info!("Debugger enabled: {:?}", debugger.session_dir());
         }
 
+        let todo_tracker = TodoTracker::new(todo_list);
+
         Ok(Self {
             console,
             llm_provider,
@@ -56,6 +61,7 @@ impl Agent {
             permission_manager: PermissionManager::new(),
             context_manager,
             debugger,
+            todo_tracker,
         })
     }
 
@@ -130,8 +136,13 @@ impl Agent {
         let history = self.conversation.get_messages()?;
         let mut messages: Vec<Message> = history;
 
-        // Add the user message
-        let user_msg = Message::user(user_message);
+        // Add the user message, with reminder if needed
+        let user_msg = if self.todo_tracker.should_remind() {
+            let reminder = self.todo_tracker.get_reminder();
+            Message::user(format!("{}{}", user_message, reminder))
+        } else {
+            Message::user(user_message)
+        };
         messages.push(user_msg.clone());
 
         // Save the user message immediately
@@ -157,6 +168,9 @@ impl Agent {
                 break;
             }
 
+            // Increment turn counter for todo tracking
+            self.todo_tracker.next_turn();
+
             // Build and log the request
             // Use a larger thinking budget to encourage more thorough reasoning
             let thinking_config = Some(ThinkingConfig::enabled(16000));
@@ -177,13 +191,36 @@ impl Agent {
             // Log the response
             self.debugger.log_api_response(&response)?;
 
-            // Process the response
-            let (should_continue, new_messages) = self.process_response(&response).await?;
+            // Process the response and track todo calls
+            let (should_continue, new_messages, todo_called) =
+                self.process_response(&response).await?;
+
+            // Record if todo was called
+            if todo_called {
+                self.todo_tracker.record_todo_call();
+            }
+
+            // Print todos after tool execution if there are any
+            if self.todo_tracker.has_todos() {
+                self.console
+                    .print_todos_from_items(&self.todo_tracker.get_todos());
+            }
 
             // Add new messages to the conversation and save incrementally
-            for msg in &new_messages {
-                messages.push(msg.clone());
-                self.conversation.add_message_raw(msg)?;
+            // If should_continue and should remind, append reminder to the last message
+            for (i, msg) in new_messages.iter().enumerate() {
+                let msg_to_add = if should_continue
+                    && i == new_messages.len() - 1
+                    && msg.role == "user"
+                    && self.todo_tracker.should_remind()
+                {
+                    // Append reminder to the last content block
+                    self.append_reminder_to_message(msg)
+                } else {
+                    msg.clone()
+                };
+                messages.push(msg_to_add.clone());
+                self.conversation.add_message_raw(&msg_to_add)?;
             }
 
             if !should_continue {
@@ -193,6 +230,27 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    /// Append a reminder to the last content block of a message
+    fn append_reminder_to_message(&self, msg: &Message) -> Message {
+        let reminder = self.todo_tracker.get_reminder();
+
+        match &msg.content {
+            MessageContent::Text(text) => Message {
+                role: msg.role.clone(),
+                content: MessageContent::Text(format!("{}{}", text, reminder)),
+            },
+            MessageContent::Blocks(blocks) => {
+                let mut new_blocks = blocks.clone();
+                // Append a text block with the reminder
+                new_blocks.push(ContentBlock::Text { text: reminder });
+                Message {
+                    role: msg.role.clone(),
+                    content: MessageContent::Blocks(new_blocks),
+                }
+            }
+        }
     }
 
     /// Log an API request to the debugger
@@ -224,14 +282,15 @@ impl Agent {
 
     /// Process a response from the LLM
     ///
-    /// Returns (should_continue, new_messages_to_add)
+    /// Returns (should_continue, new_messages_to_add, todo_was_called)
     async fn process_response(
         &mut self,
         response: &MessageResponse,
-    ) -> Result<(bool, Vec<Message>)> {
+    ) -> Result<(bool, Vec<Message>, bool)> {
         let mut new_messages = Vec::new();
         let mut tool_results: Vec<ContentBlock> = Vec::new();
         let mut has_tool_use = false;
+        let mut todo_called = false;
 
         // Process each content block
         for block in &response.content {
@@ -243,6 +302,11 @@ impl Agent {
                 ContentBlock::ToolUse { id, name, input } => {
                     has_tool_use = true;
                     tracing::info!("Tool use requested: {} ({})", name, id);
+
+                    // Check if this is a TodoWrite call
+                    if TodoTracker::is_todo_tool(name) {
+                        todo_called = true;
+                    }
 
                     // Log the tool call to debugger
                     let _ = self.debugger.log_tool_call(id, name, input);
@@ -371,6 +435,6 @@ impl Agent {
         // Determine if we should continue
         let should_continue = matches!(response.stop_reason, Some(StopReason::ToolUse));
 
-        Ok((should_continue, new_messages))
+        Ok((should_continue, new_messages, todo_called))
     }
 }

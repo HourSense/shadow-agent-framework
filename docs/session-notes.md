@@ -717,3 +717,89 @@ This enables Claude to reason throughout the entire agentic loop, providing bett
 
 ### Build Status
 ✅ Compiles successfully
+
+---
+
+## 2026-01-14: TodoTracker and Console Todo Display
+
+### Overview
+Implemented a comprehensive todo tracking and reminder system that:
+1. Tracks when TodoWrite tool was last called
+2. Adds reminders to messages when todo hasn't been used recently
+3. Displays todo list in the console while agent is processing
+
+### New Files
+
+**`src/agent/todo_tracker.rs`**
+- `TodoTracker` struct that holds reference to shared TodoList
+- Tracks current turn number and when todo was last called
+- Methods:
+  - `next_turn()` - Increment turn counter before each API call
+  - `record_todo_call()` - Mark that TodoWrite was called
+  - `should_remind()` - Check if reminder needed (threshold: 3 turns)
+  - `get_reminder()` - Get reminder text to append
+  - `get_todos()` - Get current todo items
+  - `has_todos()` - Check if list is non-empty
+  - `is_todo_tool()` - Check if tool name is TodoWrite
+
+### Console Updates
+
+**`src/cli/console.rs`**
+- Added `todo_list: Option<TodoList>` field
+- New constructor: `with_todo_list(todo_list: TodoList)`
+- New methods:
+  - `print_todos()` - Display todos from stored list
+  - `print_todos_from_items(&[TodoItem])` - Display todos from given items
+  - `refresh_todos()` - Refresh the display
+
+**Todo Display Format:**
+```
+────────────────────────────────────────────────────────────
+Todos · ctrl+t to hide todos
+  □ Pending task (gray)
+  ◐ In progress task (yellow, shows activeForm)
+  ✓ Completed task (green)
+────────────────────────────────────────────────────────────
+```
+
+### Agent Loop Updates
+
+**`src/agent/agent_loop.rs`**
+- Added `TodoTracker` to Agent struct
+- Updated `Agent::new()` to accept `TodoList` parameter
+- Modified `process_turn()`:
+  - Adds reminder to first user message if todo never called
+  - Increments turn counter before each API call
+  - Tracks if TodoWrite was called in process_response
+  - Appends reminder to tool result messages when needed
+  - Prints todos after each tool execution
+- Added `append_reminder_to_message()` helper method
+- Updated `process_response()` to return `(bool, Vec<Message>, bool)` with todo_called flag
+
+### Reminder System
+
+**First Message Reminder:**
+```
+<system-reminder>
+The TodoWrite tool hasn't been used yet. If you're working on tasks...
+</system-reminder>
+```
+
+**Subsequent Reminder (after 3 turns without todo):**
+```
+<system-reminder>
+The TodoWrite tool hasn't been used recently...
+</system-reminder>
+```
+
+### Main.rs Updates
+
+- Creates shared `todo_list` first using `new_todo_list()`
+- Passes clone to `Console::with_todo_list()`
+- Passes clone to `TodoWriteTool::new()`
+- Passes clone to `Agent::new()`
+
+All three components share the same `Arc<RwLock<Vec<TodoItem>>>`.
+
+### Build Status
+✅ Compiles successfully

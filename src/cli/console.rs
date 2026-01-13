@@ -2,12 +2,15 @@ use colored::*;
 use std::io::{self, Write};
 
 use crate::permissions::{PermissionDecision, PermissionRequest};
+use crate::tools::{TodoItem, TodoList, TodoStatus};
 
 /// Console handles all terminal I/O with colored formatting
 pub struct Console {
     user_color: Color,
     assistant_color: Color,
     tool_color: Color,
+    /// Optional shared todo list for display
+    todo_list: Option<TodoList>,
 }
 
 impl Console {
@@ -17,6 +20,17 @@ impl Console {
             user_color: Color::Cyan,
             assistant_color: Color::Green,
             tool_color: Color::Magenta,
+            todo_list: None,
+        }
+    }
+
+    /// Create a new Console with a shared todo list
+    pub fn with_todo_list(todo_list: TodoList) -> Self {
+        Self {
+            user_color: Color::Cyan,
+            assistant_color: Color::Green,
+            tool_color: Color::Magenta,
+            todo_list: Some(todo_list),
         }
     }
 
@@ -26,7 +40,13 @@ impl Console {
             user_color,
             assistant_color,
             tool_color,
+            todo_list: None,
         }
+    }
+
+    /// Set the todo list
+    pub fn set_todo_list(&mut self, todo_list: TodoList) {
+        self.todo_list = Some(todo_list);
     }
 
     /// Print a user message with colored formatting
@@ -216,6 +236,89 @@ impl Console {
 
         println!("{}", "─".repeat(60).bright_blue());
         println!();
+    }
+
+    /// Print the todo list status
+    ///
+    /// Shows todos at the bottom of the console when the agent is processing.
+    /// Format matches Claude Code style.
+    pub fn print_todos(&self) {
+        if let Some(ref todo_list) = self.todo_list {
+            let todos = todo_list.read().unwrap();
+            if todos.is_empty() {
+                return;
+            }
+
+            println!();
+            println!("{}", "─".repeat(60).bright_black());
+            println!(
+                "{} · {}",
+                "Todos".bright_white().bold(),
+                "ctrl+t to hide todos".bright_black()
+            );
+
+            for todo in todos.iter() {
+                let (icon, style) = match todo.status {
+                    TodoStatus::Pending => ("□", Color::BrightBlack),
+                    TodoStatus::InProgress => ("◐", Color::Yellow),
+                    TodoStatus::Completed => ("✓", Color::Green),
+                };
+
+                // Show activeForm for in_progress, content otherwise
+                let text = if todo.status == TodoStatus::InProgress {
+                    &todo.active_form
+                } else {
+                    &todo.content
+                };
+
+                println!("  {} {}", icon.color(style), text.color(style));
+            }
+
+            println!("{}", "─".repeat(60).bright_black());
+        }
+    }
+
+    /// Print the todo list status from a given list of items
+    ///
+    /// Use this when you have the items directly (e.g., from TodoTracker)
+    pub fn print_todos_from_items(&self, todos: &[TodoItem]) {
+        if todos.is_empty() {
+            return;
+        }
+
+        println!();
+        println!("{}", "─".repeat(60).bright_black());
+        println!(
+            "{} · {}",
+            "Todos".bright_white().bold(),
+            "ctrl+t to hide todos".bright_black()
+        );
+
+        for todo in todos.iter() {
+            let (icon, style) = match todo.status {
+                TodoStatus::Pending => ("□", Color::BrightBlack),
+                TodoStatus::InProgress => ("◐", Color::Yellow),
+                TodoStatus::Completed => ("✓", Color::Green),
+            };
+
+            // Show activeForm for in_progress, content otherwise
+            let text = if todo.status == TodoStatus::InProgress {
+                &todo.active_form
+            } else {
+                &todo.content
+            };
+
+            println!("  {} {}", icon.color(style), text.color(style));
+        }
+
+        println!("{}", "─".repeat(60).bright_black());
+    }
+
+    /// Refresh the todo display (clear and reprint)
+    pub fn refresh_todos(&self) {
+        // For now, just print - in the future we could use ANSI codes to
+        // update in place
+        self.print_todos();
     }
 }
 
