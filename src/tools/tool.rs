@@ -4,12 +4,13 @@
 
 use anyhow::Result;
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::ToolDefinition;
 
 /// Result of executing a tool
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolResult {
     /// The output of the tool
     pub output: String,
