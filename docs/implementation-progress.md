@@ -10,13 +10,13 @@ This document tracks what has been implemented in the agent framework.
 | Phase 2: Session Manager | Complete | 17 tests |
 | Phase 3: Channels & Handle | Complete | 23 tests |
 | Phase 4: Runtime | Complete | 8 tests |
-| Phase 5: Console Renderer | Pending | - |
-| Phase 6: Integration Test | Pending | - |
-| Phase 7: Permission System | Pending | - |
+| Phase 5: Console Renderer | Complete | - |
+| Phase 6: Integration Test | Skipped | - |
+| Phase 7: Permission System | Complete | 7 tests |
 | Phase 8: Tool System | Pending | - |
 | Phase 9: Full Integration | Pending | - |
 
-**Total Tests:** 60 passing
+**Total Tests:** 67 passing
 
 ---
 
@@ -365,14 +365,296 @@ runtime.shutdown("my-agent").await?;
 
 ---
 
+## Phase 5: Console Renderer
+
+**Location:** `src/cli/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `mod.rs` | Module exports |
+| `console.rs` | Low-level terminal formatting |
+| `renderer.rs` | ConsoleRenderer - subscribes to agent output |
+
+### Key Types
+
+#### `ConsoleRenderer`
+Opt-in component that subscribes to agent output and renders to terminal:
+```rust
+impl ConsoleRenderer {
+    /// Create a new console renderer for an agent
+    pub fn new(handle: AgentHandle) -> Self;
+
+    /// Create with a custom Console instance
+    pub fn with_console(handle: AgentHandle, console: Console) -> Self;
+
+    /// Configure whether to show thinking blocks
+    pub fn show_thinking(mut self, show: bool) -> Self;
+
+    /// Configure whether to show tool execution details
+    pub fn show_tools(mut self, show: bool) -> Self;
+
+    /// Run the interactive console loop
+    pub async fn run(&self) -> io::Result<()>;
+
+    /// Run a single turn (programmatic usage)
+    pub async fn run_turn(&self, input: &str) -> io::Result<()>;
+
+    /// Get the underlying agent handle
+    pub fn handle(&self) -> &AgentHandle;
+
+    /// Get the underlying console
+    pub fn console(&self) -> &Console;
+}
+```
+
+### Design Philosophy
+
+The ConsoleRenderer is **completely decoupled** from agent logic:
+- Agent runs independently in its own tokio task
+- ConsoleRenderer subscribes to the agent's broadcast output channel
+- Can be replaced with Tauri UI, Web UI, or any other renderer
+- Programmer opts in by creating a ConsoleRenderer
+
+### Features
+
+- **Streaming text**: Renders text deltas as they arrive
+- **Thinking blocks**: Optionally shows extended thinking (configurable)
+- **Tool execution**: Shows tool start/progress/end (configurable)
+- **Permission requests**: Prompts user for tool permissions via Console
+- **Subagent events**: Reports spawned/completed subagents
+- **State changes**: Logs agent state transitions
+- **Graceful exit**: Handles "exit" and "quit" commands
+
+### Usage Example
+
+```rust
+// Agent runs independently
+let handle = runtime.spawn(session, agent_fn).await;
+
+// Console renderer subscribes to output
+let renderer = ConsoleRenderer::new(handle)
+    .show_thinking(true)
+    .show_tools(true);
+
+// Run interactive loop (blocks until exit/quit)
+renderer.run().await?;
+```
+
+### Render Loop
+
+```
+┌────────────────────────┐          ┌────────────────────────────────┐
+│   ConsoleRenderer      │          │   Agent Task                   │
+│                        │          │                                │
+│  1. Read user input    │          │                                │
+│  2. handle.send_input()│──mpsc───▶│  3. Process input, call LLM    │
+│                        │          │  4. Send OutputChunks          │
+│  5. subscribe().recv() │◀─bcast───│──── TextDelta, ToolStart, etc  │
+│  6. Render to terminal │          │                                │
+│                        │          │                                │
+│  Loop until exit/quit  │          │  Agent runs until shutdown     │
+└────────────────────────┘          └────────────────────────────────┘
+```
+
+### Examples
+
+Two example agents demonstrate the framework:
+
+#### `examples/test_agent.rs`
+Minimal programmatic test:
+- Creates session with persistent storage
+- Spawns agent, sends one message
+- Manually subscribes to output
+- Shuts down and waits
+
+#### `examples/console_agent.rs`
+Interactive console agent:
+- Creates session and spawns agent
+- Uses ConsoleRenderer for interactive I/O
+- Demonstrates full decoupled pattern
+
+Run with:
+```bash
+cargo run --example console_agent
+```
+
+---
+
+## Phase 7: Permission System
+
+**Location:** `src/permissions/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `mod.rs` | Module exports and documentation |
+| `manager.rs` | Permission rules, manager, and global permissions |
+
+### Architecture
+
+The permission system uses a three-tier hierarchy:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Arc<GlobalPermissions>  ← shared by ALL agents             │
+│  (updates propagate immediately to all running agents)      │
+└─────────────────────────────────────────────────────────────┘
+         │                    │                    │
+         ▼                    ▼                    ▼
+   ┌──────────┐         ┌──────────┐         ┌──────────┐
+   │ Agent 1  │         │ Agent 2  │         │ Agent 3  │
+   │ ┌──────┐ │         │ ┌──────┐ │         │ ┌──────┐ │
+   │ │Local │ │         │ │Local │ │         │ │Local │ │
+   │ └──────┘ │         │ └──────┘ │         │ └──────┘ │
+   │ ┌──────┐ │         │ ┌──────┐ │         │ ┌──────┐ │
+   │ │Session│ │        │ │Session│ │        │ │Session│ │
+   │ └──────┘ │         │ └──────┘ │         │ └──────┘ │
+   └──────────┘         └──────────┘         └──────────┘
+```
+
+### Key Types
+
+#### `RuleType`
+```rust
+pub enum RuleType {
+    AllowTool,    // Allow entire tool (e.g., Read is always allowed)
+    AllowPrefix,  // Allow commands starting with prefix (e.g., "cd" for Bash)
+}
+```
+
+#### `PermissionRule`
+```rust
+pub struct PermissionRule {
+    pub rule_type: RuleType,
+    pub tool_name: String,           // Mandatory: "Bash", "Write", etc.
+    pub prefix: Option<String>,      // For AllowPrefix: "cd", "git status", etc.
+}
+
+// Constructors
+PermissionRule::allow_tool("Read")
+PermissionRule::allow_prefix("Bash", "cd")
+```
+
+#### `GlobalPermissions`
+Shared across all agents via `Arc`:
+```rust
+pub struct GlobalPermissions {
+    rules: RwLock<Vec<PermissionRule>>,
+}
+
+impl GlobalPermissions {
+    pub fn new() -> Self;
+    pub fn with_rules(rules: Vec<PermissionRule>) -> Self;
+    pub fn add_rule(&self, rule: PermissionRule);
+    pub fn check(&self, tool_name: &str, input: &str) -> bool;
+}
+```
+
+#### `PermissionManager`
+Per-agent permission context:
+```rust
+pub struct PermissionManager {
+    global: Arc<GlobalPermissions>,  // Shared reference
+    local: Vec<PermissionRule>,      // Agent-type specific
+    session: Vec<PermissionRule>,    // This session only
+    interactive: bool,               // Can prompt user?
+}
+
+impl PermissionManager {
+    pub fn check(&self, tool_name: &str, input: &str) -> CheckResult;
+    pub fn add_rule(&mut self, rule: PermissionRule, scope: PermissionScope);
+    pub fn process_decision(&mut self, tool_name, input, decision, scope) -> bool;
+}
+```
+
+#### `CheckResult`
+```rust
+pub enum CheckResult {
+    Allowed,   // Tool/action is allowed by a rule
+    AskUser,   // Need to ask user for permission
+    Denied,    // Denied (non-interactive mode only)
+}
+```
+
+### Integration with Runtime
+
+The `AgentRuntime` holds shared `GlobalPermissions`:
+```rust
+let runtime = AgentRuntime::new();
+// or with initial rules:
+let runtime = AgentRuntime::with_global_rules(vec![
+    PermissionRule::allow_tool("Read"),
+    PermissionRule::allow_tool("Glob"),
+]);
+
+// Access global permissions
+runtime.global_permissions().add_rule(PermissionRule::allow_tool("Grep"));
+```
+
+Each spawned agent gets its own `PermissionManager` that references the shared global:
+```rust
+// Spawn with local rules
+let handle = runtime.spawn_with_local_rules(
+    session,
+    vec![PermissionRule::allow_prefix("Bash", "git")],
+    agent_fn,
+).await;
+```
+
+### Integration with AgentInternals
+
+Agents can check/request permissions:
+```rust
+// In agent loop
+match internals.check_permission("Bash", "rm -rf /") {
+    CheckResult::Allowed => { /* execute */ }
+    CheckResult::AskUser => { /* prompt via renderer */ }
+    CheckResult::Denied => { /* reject */ }
+}
+
+// Or use the convenience method that handles prompting:
+if internals.request_permission("Bash", "Delete files", "rm -rf /tmp/*").await? {
+    // Execute tool
+}
+
+// Add rules programmatically
+internals.add_permission_rule(
+    PermissionRule::allow_prefix("Bash", "npm"),
+    PermissionScope::Session,
+);
+```
+
+### Permission Flow
+
+```
+Agent wants tool → PermissionManager.check() → CheckResult
+                           │
+                           ├─→ Allowed (rule exists) → Execute tool
+                           ├─→ Denied (non-interactive) → Return error
+                           └─→ AskUser (no rule) → Send PermissionRequest
+                                      │
+                                      ▼
+                           ConsoleRenderer receives request
+                           User decides: Allow / Deny / Always Allow
+                                      │
+                           ┌──────────┴──────────┐
+                           ▼                     ▼
+                     Allow/Deny            AlwaysAllow
+                     (one-time)            (add rule to session/global)
+```
+
+---
+
 ## Next Steps
 
-### Phase 5: Console Renderer
-Create `ConsoleRenderer` that:
-- Subscribes to agent output
-- Renders streaming text to terminal
-- Handles permission requests
-- Provides input loop
+### Phase 8: Tool System
+Implement the tool execution framework:
+- Tool trait and registry
+- Built-in tools (Read, Write, Bash, etc.)
+- Tool result handling
 
 ---
 
@@ -383,6 +665,7 @@ Create `ConsoleRenderer` that:
 cargo test core::
 cargo test session::
 cargo test runtime::
+cargo test permissions::
 
 # All tests
 cargo test

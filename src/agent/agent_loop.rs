@@ -13,7 +13,10 @@ use crate::llm::{
     AnthropicProvider, ContentBlock, Message, MessageContent, MessageRequest, MessageResponse,
     StopReason, ThinkingConfig, ToolChoice, ToolDefinition,
 };
-use crate::permissions::{PermissionDecision, PermissionManager, PermissionRequest};
+use crate::permissions::{
+    CheckResult, GlobalPermissions, PermissionManager, PermissionRequest, PermissionScope,
+};
+use std::sync::Arc;
 use crate::tools::{TodoList, ToolRegistry};
 use anyhow::Result;
 
@@ -53,12 +56,16 @@ impl Agent {
 
         let todo_tracker = TodoTracker::new(todo_list);
 
+        // Create a global permissions instance for this standalone agent
+        let global_permissions = Arc::new(GlobalPermissions::new());
+        let permission_manager = PermissionManager::new(global_permissions, "agent");
+
         Ok(Self {
             console,
             llm_provider,
             conversation,
             tool_registry,
-            permission_manager: PermissionManager::new(),
+            permission_manager,
             context_manager,
             debugger,
             todo_tracker,
@@ -314,45 +321,55 @@ impl Agent {
                     // Get tool info for permission prompt
                     let tool_info = self.tool_registry.get_tool_info(name, input);
 
+                    // Get input as string for permission check
+                    let input_str = input.to_string();
+
                     // Check if we need permission
                     let should_execute = if self.tool_registry.requires_permission(name) {
-                        // Check auto-decision first
-                        match self.permission_manager.check_auto_decision(name) {
-                            Some(true) => {
-                                // Auto-allowed
+                        // Check permission rules
+                        match self.permission_manager.check(name, &input_str) {
+                            CheckResult::Allowed => {
+                                // Allowed by rule
                                 if let Some(info) = &tool_info {
                                     self.console
                                         .print_tool_action(name, &info.action_description);
                                 }
                                 true
                             }
-                            Some(false) => {
-                                // Auto-denied
+                            CheckResult::Denied => {
+                                // Denied (non-interactive mode)
                                 self.console.print_system(&format!(
-                                    "Tool {} is blocked (always deny)",
+                                    "Tool {} is blocked (no permission rule)",
                                     name
                                 ));
                                 false
                             }
-                            None => {
+                            CheckResult::AskUser => {
                                 // Ask user
                                 let request = if let Some(info) = tool_info.clone() {
                                     PermissionRequest {
                                         tool_name: info.name,
                                         action_description: info.action_description,
+                                        input: input_str.clone(),
                                         details: info.details,
                                     }
                                 } else {
-                                    PermissionRequest::new(name, format!("Execute tool: {}", name))
+                                    PermissionRequest::new(
+                                        name,
+                                        format!("Execute tool: {}", name),
+                                        &input_str,
+                                    )
                                 };
 
                                 let decision = self.console.ask_permission(&request)?;
-                                self.permission_manager.process_decision(name, decision);
-
-                                matches!(
+                                let allowed = self.permission_manager.process_decision(
+                                    name,
+                                    &input_str,
                                     decision,
-                                    PermissionDecision::Allow | PermissionDecision::AlwaysAllow
-                                )
+                                    PermissionScope::Session,
+                                );
+
+                                allowed
                             }
                         }
                     } else {

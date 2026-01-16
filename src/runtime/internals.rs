@@ -5,11 +5,13 @@
 //! - Receive input from the handle
 //! - Send output chunks to subscribers
 //! - Update and query agent state
+//! - Check and manage permissions
 
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::core::{AgentContext, AgentState, FrameworkError, FrameworkResult, InputMessage, OutputChunk};
+use crate::permissions::{CheckResult, PermissionManager, PermissionRule, PermissionScope};
 use crate::session::AgentSession;
 
 use super::channels::{InputReceiver, OutputSender};
@@ -24,6 +26,9 @@ pub struct AgentInternals {
 
     /// The agent's context (passed to tools)
     pub context: AgentContext,
+
+    /// Permission manager for this agent
+    pub permissions: PermissionManager,
 
     /// Receiver for input messages
     input_rx: InputReceiver,
@@ -42,6 +47,7 @@ impl AgentInternals {
     pub fn new(
         session: AgentSession,
         context: AgentContext,
+        permissions: PermissionManager,
         input_rx: InputReceiver,
         output_tx: OutputSender,
         state: Arc<RwLock<AgentState>>,
@@ -49,6 +55,7 @@ impl AgentInternals {
         Self {
             session,
             context,
+            permissions,
             input_rx,
             output_tx,
             state,
@@ -146,11 +153,13 @@ impl AgentInternals {
         &self,
         tool_name: impl Into<String>,
         action: impl Into<String>,
+        input: impl Into<String>,
         details: Option<String>,
     ) -> usize {
         self.send(OutputChunk::PermissionRequest {
             tool_name: tool_name.into(),
             action: action.into(),
+            input: input.into(),
             details,
         })
     }
@@ -253,6 +262,98 @@ impl AgentInternals {
     pub fn context_for_tool(&self, tool_use_id: impl Into<String>) -> AgentContext {
         self.context.with_tool_use_id(tool_use_id)
     }
+
+    // =========================================================================
+    // Permission Methods
+    // =========================================================================
+
+    /// Check if a tool action is allowed
+    ///
+    /// Returns `CheckResult::Allowed` if a rule matches, `CheckResult::AskUser`
+    /// if user confirmation is needed, or `CheckResult::Denied` in non-interactive mode.
+    pub fn check_permission(&self, tool_name: &str, input: &str) -> CheckResult {
+        self.permissions.check(tool_name, input)
+    }
+
+    /// Check permission and request user approval if needed
+    ///
+    /// This is a convenience method that:
+    /// 1. Checks existing rules
+    /// 2. If no rule matches, sends a PermissionRequest and waits for response
+    /// 3. Processes the response (adding rules if "Always" was selected)
+    ///
+    /// Returns `Ok(true)` if allowed, `Ok(false)` if denied, or an error if
+    /// the channel closed while waiting.
+    pub async fn request_permission(
+        &mut self,
+        tool_name: &str,
+        action_description: &str,
+        input: &str,
+    ) -> FrameworkResult<bool> {
+        match self.permissions.check(tool_name, input) {
+            CheckResult::Allowed => Ok(true),
+            CheckResult::Denied => Ok(false),
+            CheckResult::AskUser => {
+                // Send permission request
+                self.send_permission_request(tool_name, action_description, input, None);
+                self.set_waiting_for_permission().await;
+
+                // Wait for response
+                match self.receive().await {
+                    Some(InputMessage::PermissionResponse {
+                        tool_name: resp_tool,
+                        allowed,
+                        remember,
+                    }) => {
+                        if resp_tool == tool_name {
+                            if remember && allowed {
+                                // Add to session rules (could also be global based on UI)
+                                self.permissions.add_rule(
+                                    PermissionRule::allow_tool(tool_name),
+                                    PermissionScope::Session,
+                                );
+                            }
+                            Ok(allowed)
+                        } else {
+                            // Mismatched tool name - shouldn't happen
+                            tracing::warn!(
+                                "Permission response for {} but expected {}",
+                                resp_tool,
+                                tool_name
+                            );
+                            Ok(false)
+                        }
+                    }
+                    Some(InputMessage::Shutdown) => Err(FrameworkError::Shutdown),
+                    Some(InputMessage::Interrupt) => Err(FrameworkError::Interrupted),
+                    None => Err(FrameworkError::ChannelClosed),
+                    _ => {
+                        // Unexpected message while waiting for permission
+                        Ok(false)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Add a permission rule
+    ///
+    /// Use this to programmatically add rules (e.g., from configuration).
+    pub fn add_permission_rule(&mut self, rule: PermissionRule, scope: PermissionScope) {
+        self.permissions.add_rule(rule, scope);
+    }
+
+    /// Check if running in interactive mode
+    pub fn is_interactive(&self) -> bool {
+        self.permissions.is_interactive()
+    }
+
+    /// Set interactive mode
+    ///
+    /// When false, permission checks that would require user input will be denied.
+    pub fn set_interactive(&mut self, interactive: bool) {
+        self.permissions.set_interactive(interactive);
+    }
 }
 
 impl std::fmt::Debug for AgentInternals {
@@ -268,6 +369,7 @@ impl std::fmt::Debug for AgentInternals {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::GlobalPermissions;
     use crate::runtime::channels::create_agent_channels;
     use crate::session::SessionStorage;
     use tempfile::TempDir;
@@ -295,7 +397,10 @@ mod tests {
             "A test agent",
         );
 
-        let internals = AgentInternals::new(session, context, input_rx, output_tx, state);
+        let global_permissions = Arc::new(GlobalPermissions::new());
+        let permissions = PermissionManager::new(global_permissions, "test-agent");
+
+        let internals = AgentInternals::new(session, context, permissions, input_rx, output_tx, state);
 
         (internals, input_tx, output_rx)
     }

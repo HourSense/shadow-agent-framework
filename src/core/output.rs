@@ -96,6 +96,8 @@ pub enum OutputChunk {
         tool_name: String,
         /// Human-readable action description
         action: String,
+        /// The actual input/command being executed
+        input: String,
         /// Additional details
         details: Option<String>,
     },

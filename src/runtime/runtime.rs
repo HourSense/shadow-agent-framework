@@ -5,6 +5,7 @@
 //! - Creating channels and returning handles
 //! - Tracking running agents
 //! - Providing shutdown methods
+//! - Sharing global permissions across all agents
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -12,6 +13,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::core::{AgentContext, AgentState, FrameworkError, FrameworkResult};
+use crate::permissions::{GlobalPermissions, PermissionManager, PermissionRule};
 use crate::session::AgentSession;
 
 use super::channels::create_agent_channels;
@@ -22,10 +24,15 @@ use super::internals::AgentInternals;
 ///
 /// The runtime maintains a registry of running agents and provides
 /// methods to spawn, query, and shutdown agents.
+///
+/// All agents spawned by this runtime share the same `GlobalPermissions`,
+/// so permission rules added to global scope are immediately visible to all agents.
 #[derive(Clone)]
 pub struct AgentRuntime {
     /// Map of session_id -> AgentHandle for running agents
     agents: Arc<RwLock<HashMap<String, AgentHandle>>>,
+    /// Shared global permissions for all agents
+    global_permissions: Arc<GlobalPermissions>,
 }
 
 impl AgentRuntime {
@@ -33,7 +40,23 @@ impl AgentRuntime {
     pub fn new() -> Self {
         Self {
             agents: Arc::new(RwLock::new(HashMap::new())),
+            global_permissions: Arc::new(GlobalPermissions::new()),
         }
+    }
+
+    /// Create a runtime with initial global permission rules
+    pub fn with_global_rules(rules: Vec<PermissionRule>) -> Self {
+        Self {
+            agents: Arc::new(RwLock::new(HashMap::new())),
+            global_permissions: Arc::new(GlobalPermissions::with_rules(rules)),
+        }
+    }
+
+    /// Get a reference to the global permissions
+    ///
+    /// This can be used to add rules that apply to all agents.
+    pub fn global_permissions(&self) -> &Arc<GlobalPermissions> {
+        &self.global_permissions
     }
 
     /// Spawn a new agent task
@@ -66,7 +89,24 @@ impl AgentRuntime {
         F: FnOnce(AgentInternals) -> Fut + Send + 'static,
         Fut: Future<Output = FrameworkResult<()>> + Send + 'static,
     {
+        self.spawn_with_local_rules(session, Vec::new(), agent_fn).await
+    }
+
+    /// Spawn a new agent task with local permission rules
+    ///
+    /// Similar to `spawn`, but allows specifying agent-specific permission rules.
+    pub async fn spawn_with_local_rules<F, Fut>(
+        &self,
+        session: AgentSession,
+        local_rules: Vec<PermissionRule>,
+        agent_fn: F,
+    ) -> AgentHandle
+    where
+        F: FnOnce(AgentInternals) -> Fut + Send + 'static,
+        Fut: Future<Output = FrameworkResult<()>> + Send + 'static,
+    {
         let session_id = session.session_id().to_string();
+        let agent_type = session.agent_type().to_string();
 
         // Create channels
         let (input_tx, input_rx, output_tx) = create_agent_channels();
@@ -82,10 +122,18 @@ impl AgentRuntime {
             session.description(),
         );
 
+        // Create permission manager with shared global + local rules
+        let permissions = PermissionManager::with_local_rules(
+            self.global_permissions.clone(),
+            &agent_type,
+            local_rules,
+        );
+
         // Create internals for the agent
         let internals = AgentInternals::new(
             session,
             context,
+            permissions,
             input_rx,
             output_tx.clone(),
             state.clone(),
