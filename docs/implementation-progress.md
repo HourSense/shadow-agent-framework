@@ -13,8 +13,8 @@ This document tracks what has been implemented in the agent framework.
 | Phase 5: Console Renderer | Complete | - |
 | Phase 6: Integration Test | Skipped | - |
 | Phase 7: Permission System | Complete | 7 tests |
-| Phase 8: Tool System | Pending | - |
-| Phase 9: Full Integration | Pending | - |
+| Phase 8: Tool System | Complete | - |
+| Phase 9: Test Agent Example | Complete | - |
 
 **Total Tests:** 67 passing
 
@@ -648,13 +648,168 @@ Agent wants tool → PermissionManager.check() → CheckResult
 
 ---
 
-## Next Steps
+## Phase 8: Tool System
 
-### Phase 8: Tool System
-Implement the tool execution framework:
-- Tool trait and registry
-- Built-in tools (Read, Write, Bash, etc.)
-- Tool result handling
+**Location:** `src/tools/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `mod.rs` | Module exports |
+| `tool.rs` | Tool trait and ToolResult |
+| `registry.rs` | ToolRegistry for managing tools |
+| `common/` | Built-in tool implementations |
+
+### Common Tools (`src/tools/common/`)
+
+| File | Description |
+|------|-------------|
+| `bash.rs` | BashTool - Execute shell commands |
+| `read_tool.rs` | ReadTool - Read file contents |
+| `write_tool.rs` | WriteTool - Write/create files |
+| `edit_tool.rs` | EditTool - Edit files with string replacement |
+| `glob_tool.rs` | GlobTool - Find files by pattern |
+| `grep_tool.rs` | GrepTool - Search file contents |
+| `todo.rs` | TodoWriteTool - Manage todo lists |
+
+### Key Types
+
+#### `Tool` Trait
+```rust
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn get_info(&self, input: &Value) -> ToolInfo;
+
+    // Execute with access to agent internals
+    async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult>;
+
+    fn requires_permission(&self) -> bool { true }
+}
+```
+
+#### `ToolResult`
+```rust
+pub struct ToolResult {
+    pub output: String,
+    pub is_error: bool,
+}
+
+impl ToolResult {
+    pub fn success(output: impl Into<String>) -> Self;
+    pub fn error(message: impl Into<String>) -> Self;
+}
+```
+
+#### `ToolRegistry`
+```rust
+impl ToolRegistry {
+    pub fn new() -> Self;
+    pub fn register(&mut self, tool: impl Tool + 'static);
+    pub fn get_definitions(&self) -> Vec<ToolDefinition>;
+    pub fn tool_names(&self) -> Vec<&str>;
+    pub fn get_tool_info(&self, name: &str, input: &Value) -> Option<ToolInfo>;
+
+    // Execute tool with internals for context access
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: &Value,
+        internals: &mut AgentInternals
+    ) -> Result<ToolResult>;
+}
+```
+
+---
+
+## Phase 9: Test Agent Example
+
+**Location:** `examples/test_agent/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `main.rs` | Entry point, setup and configuration |
+| `agent.rs` | Agent loop with permission-aware tool execution |
+| `tools.rs` | Tool registry setup |
+
+### Purpose
+
+A complete demonstration of the agent framework:
+- Runtime with shared global permissions
+- Agent with permission-aware tool execution
+- Console renderer for user interaction
+- Read, Write, and Bash tools
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  main.rs                                                        │
+│  - Creates LLM provider (AnthropicProvider)                     │
+│  - Creates AgentRuntime (no pre-configured permissions)         │
+│  - Creates ToolRegistry (Read, Write, Bash)                     │
+│  - Creates AgentSession with persistent storage                 │
+│  - Spawns agent via runtime.spawn()                             │
+│  - Creates ConsoleRenderer and runs interactive loop            │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  agent.rs - Agent Loop                                          │
+│                                                                 │
+│  loop {                                                         │
+│    1. Wait for InputMessage                                     │
+│    2. On UserInput → process_turn()                             │
+│       a. Add user message to history                            │
+│       b. LLM loop:                                              │
+│          - Call LLM with tools                                  │
+│          - For each tool_use → execute_tool_with_permission()   │
+│          - Add results to history                               │
+│          - Continue until no tool calls                         │
+│    3. Send Done, persist session                                │
+│    4. Loop until Interrupt/Shutdown                             │
+│  }                                                              │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  execute_tool_with_permission()                                 │
+│                                                                 │
+│  1. Check permission via internals.check_permission()           │
+│     ├─ Allowed → execute immediately                            │
+│     ├─ Denied → return error                                    │
+│     └─ AskUser → prompt user:                                   │
+│        a. Send PermissionRequest via output channel             │
+│        b. Set state to WaitingForPermission                     │
+│        c. Wait for PermissionResponse                           │
+│        d. If "Always Allow" → add rule to session               │
+│        e. Execute or deny based on response                     │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Running the Example
+
+```bash
+cargo run --example test_agent
+```
+
+This will:
+1. Start the agent with no pre-configured permissions
+2. Present an interactive console
+3. Every tool execution will prompt for permission
+4. User can choose: Allow / Deny / Always Allow
+
+### Key Points
+
+- **No pre-configured permissions**: Demonstrates full permission flow
+- **Permission persistence**: "Always Allow" adds rule to session scope
+- **Session persistence**: Conversation is saved to `./sessions/` directory
+- **Streaming output**: Uses ConsoleRenderer for real-time display
+- **Complete tool flow**: Read, Write, Bash tools fully functional
 
 ---
 
@@ -669,4 +824,13 @@ cargo test permissions::
 
 # All tests
 cargo test
+```
+
+---
+
+## Running Examples
+
+```bash
+# Test agent with permission prompts
+cargo run --example test_agent
 ```

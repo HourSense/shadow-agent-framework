@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::llm::ToolDefinition;
+use crate::runtime::AgentInternals;
 
 /// Result of executing a tool
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,7 +70,8 @@ pub trait Tool: Send + Sync {
     /// Execute the tool with the given input
     ///
     /// The input is a JSON value that matches the tool's input schema.
-    async fn execute(&self, input: &Value) -> Result<ToolResult>;
+    /// The internals provide access to agent context, output channel, etc.
+    async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult>;
 
     /// Check if this tool requires permission before execution
     ///
