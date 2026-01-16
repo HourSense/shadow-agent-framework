@@ -9,8 +9,10 @@
 //! This can be replaced with other renderers (Tauri UI, Web UI, etc.)
 
 use std::io::{self, Write};
+use std::sync::Arc;
 
 use crate::core::OutputChunk;
+use crate::helpers::TodoListManager;
 use crate::permissions::PermissionDecision;
 use crate::runtime::AgentHandle;
 
@@ -69,6 +71,12 @@ impl ConsoleRenderer {
     /// Set whether to show tool execution details
     pub fn show_tools(mut self, show: bool) -> Self {
         self.show_tools = show;
+        self
+    }
+
+    /// Set the todo manager for displaying task progress
+    pub fn with_todo_manager(mut self, manager: Arc<TodoListManager>) -> Self {
+        self.console.set_todo_manager(manager);
         self
     }
 

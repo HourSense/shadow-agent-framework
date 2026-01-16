@@ -18,6 +18,5 @@ pub use tool::{Tool, ToolResult};
 
 // Re-export common tools for convenience
 pub use common::{
-    new_todo_list, BashTool, EditTool, GlobTool, GrepTool, ReadTool, TodoItem, TodoList,
-    TodoStatus, TodoWriteTool, WriteTool,
+    BashTool, EditTool, GlobTool, GrepTool, ReadTool, TodoWriteTool, WriteTool,
 };

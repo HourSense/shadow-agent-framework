@@ -8,3 +8,6 @@ pub mod tools;
 pub mod cli;
 pub mod llm;
 pub mod logging;
+
+// Useful helpers for agent implementations
+pub mod helpers;

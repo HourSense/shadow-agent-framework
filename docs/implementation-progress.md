@@ -15,8 +15,9 @@ This document tracks what has been implemented in the agent framework.
 | Phase 7: Permission System | Complete | 7 tests |
 | Phase 8: Tool System | Complete | - |
 | Phase 9: Test Agent Example | Complete | - |
+| Phase 10: Helpers Module | Complete | 4 tests |
 
-**Total Tests:** 67 passing
+**Total Tests:** 83 passing
 
 ---
 
@@ -810,6 +811,74 @@ This will:
 - **Session persistence**: Conversation is saved to `./sessions/` directory
 - **Streaming output**: Uses ConsoleRenderer for real-time display
 - **Complete tool flow**: Read, Write, Bash tools fully functional
+
+---
+
+## Helpers Module
+
+**Location:** `src/helpers/`
+
+### Files
+
+| File | Description |
+|------|-------------|
+| `mod.rs` | Module exports |
+| `todo_manager.rs` | TodoListManager for task tracking |
+
+### Key Types
+
+#### `TodoListManager`
+Manages a todo list with turn tracking. Stored in agent's ResourceMap and accessed by TodoWriteTool.
+
+```rust
+pub struct TodoListManager { /* RwLock-protected state */ }
+
+impl TodoListManager {
+    pub fn new() -> Self;
+    pub fn get_todos(&self) -> Vec<TodoItem>;
+    pub fn set_todos(&self, items: Vec<TodoItem>, turn: usize);
+    pub fn last_updated_turn(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn len(&self) -> usize;
+    pub fn counts(&self) -> (usize, usize, usize); // (pending, in_progress, completed)
+    pub fn current_task(&self) -> Option<TodoItem>;
+    pub fn format(&self) -> String;
+}
+```
+
+#### `TodoItem` and `TodoStatus`
+```rust
+pub enum TodoStatus { Pending, InProgress, Completed }
+
+pub struct TodoItem {
+    pub content: String,
+    pub status: TodoStatus,
+    pub active_form: String,
+}
+
+impl TodoItem {
+    pub fn new(content: impl Into<String>, active_form: impl Into<String>) -> Self;
+    pub fn with_status(content, active_form, status) -> Self;
+}
+```
+
+### Usage Pattern
+
+```rust
+// 1. In agent setup, add TodoListManager to context resources:
+internals.context.insert_resource(TodoListManager::new());
+
+// 2. Register TodoWriteTool (no constructor args needed):
+registry.register(TodoWriteTool::new());
+
+// 3. TodoWriteTool automatically finds and updates the manager
+// when the LLM calls it
+
+// 4. Console can display todos if given the manager:
+let manager = Arc::new(TodoListManager::new());
+let console = Console::with_todo_manager(manager.clone());
+// Pass the same Arc to context.insert_resource()
+```
 
 ---
 

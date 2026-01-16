@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 use singapore_project::{
     core::{FrameworkResult, InputMessage},
+    helpers::TodoListManager,
     llm::{AnthropicProvider, ContentBlock, Message, StopReason},
     permissions::{CheckResult, PermissionRule, PermissionScope},
     runtime::AgentInternals,
@@ -26,8 +27,10 @@ You have the following tools available:
 - Read: Read file contents
 - Write: Write or create files
 - Bash: Execute shell commands
+- TodoWrite: Track tasks you need to perform
 
 When the user asks you to do something, use the appropriate tools.
+Use TodoWrite to track multi-step tasks and show progress.
 Be concise in your responses."#;
 
 /// Run the agent loop
@@ -35,7 +38,11 @@ pub async fn run(
     mut internals: AgentInternals,
     llm: Arc<AnthropicProvider>,
     tools: Arc<ToolRegistry>,
+    todo_manager: Arc<TodoListManager>,
 ) -> FrameworkResult<()> {
+    // Insert TodoListManager into context so TodoWriteTool can find it
+    internals.context.insert_resource(todo_manager);
+
     tracing::info!("[Agent] Started, waiting for input...");
 
     loop {

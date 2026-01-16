@@ -1,105 +1,78 @@
 //! TodoWrite tool for task management
 //!
 //! This tool allows the agent to maintain and update a todo list
-//! to track tasks it needs to perform. State is persisted.
+//! to track tasks it needs to perform.
+//!
+//! The tool looks for a `TodoListManager` in the agent's ResourceMap.
+//! If found, it updates the manager; if not found, it returns an error
+//! prompting the agent to ensure TodoListManager is configured.
+//!
+//! Usage:
+//! ```ignore
+//! // In agent setup:
+//! internals.context.insert_resource(TodoListManager::new());
+//!
+//! // Register the tool (no arguments needed)
+//! registry.register(TodoWriteTool::new());
+//! ```
 
 use anyhow::Result;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
-use std::sync::{Arc, RwLock};
 
 use super::super::tool::{Tool, ToolInfo, ToolResult};
+use crate::helpers::{TodoItem, TodoListManager, TodoStatus};
 use crate::llm::{ToolDefinition, ToolInputSchema};
 use crate::runtime::AgentInternals;
 
-/// Status of a todo item
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "snake_case")]
-pub enum TodoStatus {
-    Pending,
-    InProgress,
-    Completed,
-}
-
-/// A single todo item
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TodoItem {
-    /// The imperative form describing what needs to be done
-    pub content: String,
-    /// Current status of the task
-    pub status: TodoStatus,
-    /// The present continuous form shown during execution
-    #[serde(rename = "activeForm")]
-    pub active_form: String,
-}
-
-/// Shared todo list state
-pub type TodoList = Arc<RwLock<Vec<TodoItem>>>;
-
-/// Create a new shared todo list
-pub fn new_todo_list() -> TodoList {
-    Arc::new(RwLock::new(Vec::new()))
-}
-
-/// TodoWrite tool for managing tasks
-pub struct TodoWriteTool {
-    todos: TodoList,
-}
-
-/// Input for the todo tool
+/// Input for the todo tool (matches the LLM schema)
 #[derive(Debug, Deserialize)]
 struct TodoInput {
     /// The full list of todos to set
-    todos: Vec<TodoItem>,
+    todos: Vec<TodoItemInput>,
 }
 
+/// Input format for a single todo item from the LLM
+#[derive(Debug, Deserialize)]
+struct TodoItemInput {
+    content: String,
+    status: String,
+    #[serde(rename = "activeForm")]
+    active_form: String,
+}
+
+impl TodoItemInput {
+    /// Convert to the helpers::TodoItem type
+    fn into_todo_item(self) -> TodoItem {
+        let status = match self.status.as_str() {
+            "in_progress" => TodoStatus::InProgress,
+            "completed" => TodoStatus::Completed,
+            _ => TodoStatus::Pending,
+        };
+        TodoItem::with_status(self.content, self.active_form, status)
+    }
+}
+
+/// TodoWrite tool for managing tasks
+///
+/// This tool reads from and writes to a `TodoListManager` stored in the
+/// agent's ResourceMap. The manager must be added to the context before
+/// the tool can be used.
+pub struct TodoWriteTool;
+
 impl TodoWriteTool {
-    /// Create a new TodoWrite tool with a shared todo list
-    pub fn new(todos: TodoList) -> Self {
-        Self { todos }
+    /// Create a new TodoWrite tool
+    ///
+    /// The tool will look for TodoListManager in the agent's resources.
+    pub fn new() -> Self {
+        Self
     }
+}
 
-    /// Get the current todo list
-    pub fn get_todos(&self) -> Vec<TodoItem> {
-        self.todos.read().unwrap().clone()
-    }
-
-    /// Format the todo list for display
-    pub fn format_todos(&self) -> String {
-        let todos = self.todos.read().unwrap();
-        if todos.is_empty() {
-            return "No tasks in the todo list.".to_string();
-        }
-
-        let mut output = String::new();
-        output.push_str("Todo List:\n");
-
-        for (i, item) in todos.iter().enumerate() {
-            let status_icon = match item.status {
-                TodoStatus::Pending => "[ ]",
-                TodoStatus::InProgress => "[*]",
-                TodoStatus::Completed => "[x]",
-            };
-            output.push_str(&format!(
-                "  {} {}. {}\n",
-                status_icon,
-                i + 1,
-                item.content
-            ));
-        }
-
-        // Show summary
-        let pending = todos.iter().filter(|t| t.status == TodoStatus::Pending).count();
-        let in_progress = todos.iter().filter(|t| t.status == TodoStatus::InProgress).count();
-        let completed = todos.iter().filter(|t| t.status == TodoStatus::Completed).count();
-
-        output.push_str(&format!(
-            "\nSummary: {} pending, {} in progress, {} completed\n",
-            pending, in_progress, completed
-        ));
-
-        output
+impl Default for TodoWriteTool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -174,18 +147,37 @@ impl Tool for TodoWriteTool {
         }
     }
 
-    async fn execute(&self, input: &Value, _internals: &mut AgentInternals) -> Result<ToolResult> {
+    async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult> {
+        // Parse the input
         let todo_input: TodoInput = serde_json::from_value(input.clone())
             .map_err(|e| anyhow::anyhow!("Invalid todo input: {}", e))?;
 
-        // Update the todo list
-        {
-            let mut todos = self.todos.write().unwrap();
-            *todos = todo_input.todos;
-        }
+        // Look for TodoListManager in resources
+        let manager = match internals.context.get_resource::<TodoListManager>() {
+            Some(m) => m,
+            None => {
+                return Ok(ToolResult::error(
+                    "TodoListManager not found in agent resources. \
+                    Ensure TodoListManager is added to context before using TodoWriteTool."
+                ));
+            }
+        };
+
+        // Convert input items to TodoItem
+        let items: Vec<TodoItem> = todo_input
+            .todos
+            .into_iter()
+            .map(|i| i.into_todo_item())
+            .collect();
+
+        // Get current turn from context
+        let current_turn = internals.context.current_turn;
+
+        // Update the manager
+        manager.set_todos(items, current_turn);
 
         // Return the formatted list
-        let output = self.format_todos();
+        let output = manager.format();
         Ok(ToolResult::success(output))
     }
 
@@ -193,6 +185,3 @@ impl Tool for TodoWriteTool {
         false // Todo updates don't need permission
     }
 }
-
-// Tests temporarily disabled - require AgentInternals test helper
-// TODO: Create test infrastructure for tools that need AgentInternals

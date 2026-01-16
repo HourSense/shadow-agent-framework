@@ -22,5 +22,5 @@ pub use edit_tool::EditTool;
 pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
 pub use read_tool::ReadTool;
-pub use todo::{new_todo_list, TodoItem, TodoList, TodoStatus, TodoWriteTool};
+pub use todo::TodoWriteTool;
 pub use write_tool::WriteTool;
