@@ -332,7 +332,7 @@ mod tests {
         let (session, _temp) = create_test_session("spawn-test");
 
         let handle = runtime
-            .spawn(session, |mut internals| async move {
+            .spawn(session, |internals| async move {
                 // Simple agent that exits immediately
                 internals.set_done().await;
                 Ok(())
@@ -508,7 +508,7 @@ mod tests {
         let (session, _temp) = create_test_session("wait-test");
 
         let handle = runtime
-            .spawn(session, |mut internals| async move {
+            .spawn(session, |internals| async move {
                 // Wait a bit then exit
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                 internals.set_done().await;
