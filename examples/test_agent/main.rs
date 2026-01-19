@@ -29,7 +29,6 @@ use shadow_agent_sdk::{
     helpers::{inject_system_reminder, TodoListManager},
     hooks::{HookContext, HookEvent, HookRegistry, HookResult},
     llm::AnthropicProvider,
-    permissions::PermissionRule,
     runtime::AgentRuntime,
     session::{AgentSession, SessionStorage},
 };
