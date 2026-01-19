@@ -111,6 +111,16 @@ impl AgentInternals {
         self.send(OutputChunk::ThinkingDelta(text.into()))
     }
 
+    /// Send thinking complete signal
+    pub fn send_thinking_complete(&self, full_text: impl Into<String>) -> usize {
+        self.send(OutputChunk::ThinkingComplete(full_text.into()))
+    }
+
+    /// Send text complete signal
+    pub fn send_text_complete(&self, full_text: impl Into<String>) -> usize {
+        self.send(OutputChunk::TextComplete(full_text.into()))
+    }
+
     /// Send a status update
     pub fn send_status(&self, status: impl Into<String>) -> usize {
         self.send(OutputChunk::Status(status.into()))

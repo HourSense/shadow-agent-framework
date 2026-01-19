@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use crate::helpers::InjectionChain;
+use crate::llm::ThinkingConfig;
 use crate::tools::ToolRegistry;
 
 /// Configuration for a StandardAgent
@@ -16,6 +17,8 @@ use crate::tools::ToolRegistry;
 ///     .with_tools(tools)
 ///     .with_injection_chain(injections)
 ///     .with_max_tool_iterations(50)
+///     .with_thinking(16000)  // Enable extended thinking with 16k token budget
+///     .with_streaming(true)
 ///     .with_debug(true);
 /// ```
 pub struct AgentConfig {
@@ -36,6 +39,13 @@ pub struct AgentConfig {
 
     /// Whether to enable debug logging (API calls, tool calls)
     pub debug_enabled: bool,
+
+    /// Whether to enable streaming responses from the LLM
+    pub streaming_enabled: bool,
+
+    /// Extended thinking configuration (optional)
+    /// When enabled, Claude will show its step-by-step reasoning process.
+    pub thinking: Option<ThinkingConfig>,
 }
 
 impl AgentConfig {
@@ -48,6 +58,8 @@ impl AgentConfig {
             max_tool_iterations: 100,
             auto_save_session: true,
             debug_enabled: false,
+            streaming_enabled: false,
+            thinking: None,
         }
     }
 
@@ -105,6 +117,36 @@ impl AgentConfig {
         self
     }
 
+    /// Enable or disable streaming responses
+    ///
+    /// When enabled, the agent will stream LLM responses in real-time,
+    /// sending text deltas as they arrive. This provides a better user
+    /// experience for interactive applications.
+    pub fn with_streaming(mut self, enabled: bool) -> Self {
+        self.streaming_enabled = enabled;
+        self
+    }
+
+    /// Enable extended thinking with a token budget
+    ///
+    /// Extended thinking gives Claude enhanced reasoning capabilities for complex tasks.
+    /// Claude will show its step-by-step thought process before delivering its final answer.
+    ///
+    /// The `budget_tokens` parameter determines the maximum tokens Claude can use for thinking.
+    /// Minimum is 1024 tokens. Larger budgets can improve response quality for complex problems.
+    ///
+    /// Note: When thinking is enabled, temperature is automatically set to 1 (required by API).
+    pub fn with_thinking(mut self, budget_tokens: u32) -> Self {
+        self.thinking = Some(ThinkingConfig::enabled(budget_tokens));
+        self
+    }
+
+    /// Set a custom thinking configuration
+    pub fn with_thinking_config(mut self, config: ThinkingConfig) -> Self {
+        self.thinking = Some(config);
+        self
+    }
+
     /// Get tool definitions (empty vec if no tools)
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tools
@@ -117,6 +159,20 @@ impl AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         Self::new("You are a helpful assistant.")
+    }
+}
+
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("system_prompt", &format!("{}...", &self.system_prompt.chars().take(50).collect::<String>()))
+            .field("tools", &self.tools.as_ref().map(|t| t.tool_names()))
+            .field("max_tool_iterations", &self.max_tool_iterations)
+            .field("auto_save_session", &self.auto_save_session)
+            .field("debug_enabled", &self.debug_enabled)
+            .field("streaming_enabled", &self.streaming_enabled)
+            .field("thinking", &self.thinking)
+            .finish()
     }
 }
 

@@ -5,14 +5,20 @@
 //! - Context injection before LLM calls
 //! - Session persistence
 //! - Debug logging (when enabled)
+//! - Streaming responses (when enabled)
 
 use std::sync::Arc;
 
 use anyhow::Result;
+use futures::StreamExt;
+use serde_json::Value;
 
 use crate::core::{FrameworkResult, InputMessage};
 use crate::helpers::Debugger;
-use crate::llm::{AnthropicProvider, ContentBlock, Message, StopReason};
+use crate::llm::{
+    AnthropicProvider, ContentBlock, ContentBlockStart, ContentDelta, Message, StopReason,
+    StreamEvent,
+};
 use crate::runtime::AgentInternals;
 use crate::tools::ToolResult;
 
@@ -170,67 +176,46 @@ impl StandardAgent {
                 }
             }
 
-            // Call LLM
-            let response = self
-                .llm
-                .send_with_tools(
-                    messages,
-                    Some(&self.config.system_prompt),
-                    tool_definitions.clone(),
-                    None,
-                    None,
-                )
-                .await?;
+            // Choose streaming or non-streaming based on config
+            let (content_blocks, stop_reason) = if self.config.streaming_enabled {
+                self.call_llm_streaming(internals, messages, &tool_definitions)
+                    .await?
+            } else {
+                self.call_llm_non_streaming(internals, messages, &tool_definitions)
+                    .await?
+            };
 
             tracing::info!(
                 "[StandardAgent] LLM response: stop_reason={:?}",
-                response.stop_reason
+                stop_reason
             );
 
-            // Log API response if debugger is enabled
-            if let Some(debugger) = internals.context.get_resource::<Debugger>() {
-                if let Ok(response_json) = serde_json::to_value(&response) {
-                    if let Err(e) = debugger.log_api_response(&response_json) {
-                        tracing::warn!("[StandardAgent] Failed to log API response: {}", e);
-                    }
-                }
-            }
-
-            // Process response content blocks
+            // Process tool use blocks and execute tools
             let mut tool_results: Vec<(String, ToolResult)> = Vec::new();
 
-            for block in &response.content {
-                match block {
-                    ContentBlock::Text { text } => {
-                        internals.send_text(text);
-                    }
+            for block in &content_blocks {
+                if let ContentBlock::ToolUse { id, name, input } = block {
+                    tracing::info!("[StandardAgent] Tool use: {} ({})", name, id);
 
-                    ContentBlock::Thinking { thinking, .. } => {
-                        internals.send_thinking(thinking);
-                    }
+                    // Execute tool with permission check (if tools configured)
+                    let result = if let Some(ref tools) = self.config.tools {
+                        ToolExecutor::execute_with_permission(internals, tools, name, id, input)
+                            .await
+                    } else {
+                        ToolResult::error(format!(
+                            "No tools configured, cannot execute: {}",
+                            name
+                        ))
+                    };
 
-                    ContentBlock::ToolUse { id, name, input } => {
-                        tracing::info!("[StandardAgent] Tool use: {} ({})", name, id);
-
-                        // Execute tool with permission check (if tools configured)
-                        let result = if let Some(ref tools) = self.config.tools {
-                            ToolExecutor::execute_with_permission(internals, tools, name, id, input)
-                                .await
-                        } else {
-                            ToolResult::error(format!("No tools configured, cannot execute: {}", name))
-                        };
-
-                        tool_results.push((id.clone(), result));
-                    }
-
-                    _ => {}
+                    tool_results.push((id.clone(), result));
                 }
             }
 
             // Add assistant message to history
             internals
                 .session
-                .add_message(Message::assistant_with_blocks(response.content.clone()))?;
+                .add_message(Message::assistant_with_blocks(content_blocks))?;
 
             // If there were tool calls, add results and continue loop
             if !tool_results.is_empty() {
@@ -251,7 +236,7 @@ impl StandardAgent {
             }
 
             // No tool calls - check if we should stop
-            match response.stop_reason {
+            match stop_reason {
                 Some(StopReason::EndTurn) | Some(StopReason::StopSequence) | None => {
                     // Done with this turn
                     break;
@@ -276,5 +261,202 @@ impl StandardAgent {
         }
 
         Ok(())
+    }
+
+    /// Call LLM without streaming (original behavior)
+    async fn call_llm_non_streaming(
+        &self,
+        internals: &mut AgentInternals,
+        messages: Vec<Message>,
+        tool_definitions: &[crate::llm::ToolDefinition],
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>)> {
+        let response = self
+            .llm
+            .send_with_tools(
+                messages,
+                Some(&self.config.system_prompt),
+                tool_definitions.to_vec(),
+                None,
+                self.config.thinking.clone(),
+            )
+            .await?;
+
+        // Log API response if debugger is enabled
+        if let Some(debugger) = internals.context.get_resource::<Debugger>() {
+            if let Ok(response_json) = serde_json::to_value(&response) {
+                if let Err(e) = debugger.log_api_response(&response_json) {
+                    tracing::warn!("[StandardAgent] Failed to log API response: {}", e);
+                }
+            }
+        }
+
+        // Send text and thinking content to output
+        for block in &response.content {
+            match block {
+                ContentBlock::Text { text } => {
+                    internals.send_text(text);
+                    internals.send_text_complete(text);
+                }
+                ContentBlock::Thinking { thinking, .. } => {
+                    internals.send_thinking(thinking);
+                    internals.send_thinking_complete(thinking);
+                }
+                _ => {}
+            }
+        }
+
+        Ok((response.content, response.stop_reason))
+    }
+
+    /// Call LLM with streaming - sends deltas in real-time
+    async fn call_llm_streaming(
+        &self,
+        internals: &mut AgentInternals,
+        messages: Vec<Message>,
+        tool_definitions: &[crate::llm::ToolDefinition],
+    ) -> Result<(Vec<ContentBlock>, Option<StopReason>)> {
+        let mut stream = self
+            .llm
+            .stream_with_tools(
+                messages,
+                Some(&self.config.system_prompt),
+                tool_definitions.to_vec(),
+                None,
+                self.config.thinking.clone(),
+            )
+            .await?;
+
+        // Track content blocks as they're built
+        let mut content_blocks: Vec<ContentBlock> = Vec::new();
+        let mut current_block_index: Option<usize> = None;
+        let mut stop_reason: Option<StopReason> = None;
+
+        // Accumulators for building content blocks
+        let mut text_accum = String::new();
+        let mut thinking_accum = String::new();
+        let mut thinking_signature = String::new();
+        let mut tool_input_accum = String::new();
+        let mut current_tool_id = String::new();
+        let mut current_tool_name = String::new();
+
+        while let Some(event_result) = stream.next().await {
+            match event_result {
+                Ok(event) => {
+                    match event {
+                        StreamEvent::MessageStart(_) => {
+                            tracing::debug!("[StandardAgent] Stream started");
+                        }
+
+                        StreamEvent::ContentBlockStart(block_start) => {
+                            current_block_index = Some(block_start.index);
+
+                            match &block_start.content_block {
+                                ContentBlockStart::Text { .. } => {
+                                    text_accum.clear();
+                                }
+                                ContentBlockStart::Thinking { .. } => {
+                                    thinking_accum.clear();
+                                    thinking_signature.clear();
+                                }
+                                ContentBlockStart::ToolUse { id, name, .. } => {
+                                    tool_input_accum.clear();
+                                    current_tool_id = id.clone();
+                                    current_tool_name = name.clone();
+                                }
+                            }
+                        }
+
+                        StreamEvent::ContentBlockDelta(delta) => {
+                            match &delta.delta {
+                                ContentDelta::TextDelta { text } => {
+                                    text_accum.push_str(text);
+                                    // Stream text to output immediately
+                                    internals.send_text(text);
+                                }
+                                ContentDelta::ThinkingDelta { thinking } => {
+                                    thinking_accum.push_str(thinking);
+                                    // Stream thinking to output immediately
+                                    internals.send_thinking(thinking);
+                                }
+                                ContentDelta::SignatureDelta { signature } => {
+                                    thinking_signature.push_str(signature);
+                                }
+                                ContentDelta::InputJsonDelta { partial_json } => {
+                                    tool_input_accum.push_str(partial_json);
+                                }
+                            }
+                        }
+
+                        StreamEvent::ContentBlockStop(block_stop) => {
+                            if current_block_index == Some(block_stop.index) {
+                                // Finalize the content block
+                                if !text_accum.is_empty() {
+                                    // Send text complete signal to CLI
+                                    internals.send_text_complete(&text_accum);
+                                    content_blocks.push(ContentBlock::Text {
+                                        text: text_accum.clone(),
+                                    });
+                                    text_accum.clear();
+                                } else if !thinking_accum.is_empty() {
+                                    // Send thinking complete signal to CLI
+                                    internals.send_thinking_complete(&thinking_accum);
+                                    content_blocks.push(ContentBlock::Thinking {
+                                        thinking: thinking_accum.clone(),
+                                        signature: thinking_signature.clone(),
+                                    });
+                                    thinking_accum.clear();
+                                    thinking_signature.clear();
+                                } else if !tool_input_accum.is_empty()
+                                    || !current_tool_name.is_empty()
+                                {
+                                    // Parse accumulated JSON
+                                    let input: Value =
+                                        serde_json::from_str(&tool_input_accum).unwrap_or_default();
+                                    content_blocks.push(ContentBlock::ToolUse {
+                                        id: current_tool_id.clone(),
+                                        name: current_tool_name.clone(),
+                                        input,
+                                    });
+                                    tool_input_accum.clear();
+                                    current_tool_id.clear();
+                                    current_tool_name.clear();
+                                }
+                                current_block_index = None;
+                            }
+                        }
+
+                        StreamEvent::MessageDelta(msg_delta) => {
+                            stop_reason = msg_delta.delta.stop_reason;
+                        }
+
+                        StreamEvent::MessageStop => {
+                            tracing::debug!("[StandardAgent] Stream complete");
+                        }
+
+                        StreamEvent::Ping => {
+                            tracing::trace!("[StandardAgent] Ping");
+                        }
+
+                        StreamEvent::Error(err) => {
+                            tracing::error!(
+                                "[StandardAgent] Stream error: {}: {}",
+                                err.error.error_type,
+                                err.error.message
+                            );
+                            internals.send_error(format!(
+                                "Stream error: {}",
+                                err.error.message
+                            ));
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!("[StandardAgent] Stream error: {}", e);
+                    return Err(e);
+                }
+            }
+        }
+
+        Ok((content_blocks, stop_reason))
     }
 }

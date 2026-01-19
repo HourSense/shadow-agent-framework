@@ -146,9 +146,59 @@ The stream handles errors in several ways:
 3. **Parse Errors**: If SSE parsing fails, a warning is logged but the stream continues
 4. **Unknown Events**: Unknown event types are logged and skipped (forward compatibility)
 
+## Agent-Level Streaming
+
+The `StandardAgent` also supports streaming, which can be enabled via `AgentConfig`:
+
+### Configuration
+
+```rust
+let config = AgentConfig::new("You are a helpful assistant")
+    .with_tools(tools)
+    .with_streaming(true); // Enable streaming
+
+let agent = StandardAgent::new(config, llm);
+```
+
+### How Agent Streaming Works
+
+When streaming is enabled on `StandardAgent`:
+
+1. The agent uses `stream_with_tools` instead of `send_with_tools`
+2. Text and thinking deltas are sent via `internals.send_text()` and `internals.send_thinking()` immediately as they arrive
+3. Tool use blocks are accumulated and executed after the stream completes
+4. The agent loop continues to work normally with tool calling
+
+### Test Agent Example
+
+The `test_agent` example supports streaming via the `--stream` flag and extended thinking via `--think`:
+
+```bash
+# Without streaming (default)
+cargo run --example test_agent
+
+# With streaming enabled
+cargo run --example test_agent -- --stream
+
+# With streaming and resume
+cargo run --example test_agent -- --stream --resume
+
+# With extended thinking enabled
+cargo run --example test_agent -- --think
+
+# With both streaming and thinking
+cargo run --example test_agent -- --stream --think
+```
+
+### Output Chunks
+
+When streaming, the agent sends `OutputChunk::TextDelta` and `OutputChunk::ThinkingDelta` chunks as they arrive. The `ConsoleRenderer` (or any other subscriber) receives these chunks and can display them immediately, providing real-time feedback to the user.
+
 ## Implementation Notes
 
 - The streaming implementation uses SSE (Server-Sent Events) parsing with `tokio::io::BufReader`
 - Events are parsed line-by-line, looking for `event:` and `data:` prefixes
 - Empty lines signal the end of an event
 - The `anthropic-beta` header is included for extended thinking support
+- Agent streaming accumulates content blocks while streaming deltas to the output channel
+- Tool execution happens after the stream completes (tools cannot be executed during streaming)

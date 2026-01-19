@@ -223,7 +223,7 @@ impl Console {
         io::stdout().flush().unwrap();
     }
 
-    /// Print a thinking block (extended thinking content)
+    /// Print a thinking block (extended thinking content) - all at once
     pub fn print_thinking_block(&self, thinking: &str) {
         println!();
         println!("{}", "─".repeat(60).bright_blue());
@@ -237,6 +237,29 @@ impl Console {
 
         println!("{}", "─".repeat(60).bright_blue());
         println!();
+    }
+
+    /// Print thinking prefix (header) for streaming thinking
+    pub fn print_thinking_prefix(&self) {
+        println!();
+        println!("{}", "─".repeat(60).bright_blue());
+        println!("{}", "💭 Agent Thinking:".bright_blue().bold());
+        println!("{}", "─".repeat(60).bright_blue());
+        io::stdout().flush().unwrap();
+    }
+
+    /// Print a chunk of thinking content (for streaming)
+    pub fn print_thinking_chunk(&self, chunk: &str) {
+        print!("{}", chunk.bright_black().italic());
+        io::stdout().flush().unwrap();
+    }
+
+    /// Print thinking suffix (footer) after streaming thinking completes
+    pub fn print_thinking_suffix(&self) {
+        println!();
+        println!("{}", "─".repeat(60).bright_blue());
+        println!();
+        io::stdout().flush().unwrap();
     }
 
     /// Print the todo list status

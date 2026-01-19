@@ -5,12 +5,17 @@
 //! - StandardAgent for the agent loop
 //! - Context injections for dynamic message modification
 //! - TodoListManager for task tracking
+//! - Streaming responses (optional)
 //!
 //! Read operations are pre-allowed, others will prompt the user.
 //!
 //! Run with:
-//!   cargo run --example test_agent              # New session
-//!   cargo run --example test_agent -- --resume  # Resume existing session
+//!   cargo run --example test_agent                     # New session
+//!   cargo run --example test_agent -- --resume         # Resume existing session
+//!   cargo run --example test_agent -- --stream         # New session with streaming
+//!   cargo run --example test_agent -- --stream --resume # Resume with streaming
+//!   cargo run --example test_agent -- --think          # Enable extended thinking
+//!   cargo run --example test_agent -- --stream --think # Streaming with thinking
 
 mod tools;
 
@@ -56,7 +61,9 @@ async fn main() -> Result<()> {
 
     println!("=== Test Agent (StandardAgent) ===");
     println!("This agent uses the standardized agent framework.");
-    println!("Read operations are pre-allowed. Others will require permission.\n");
+    println!("Read operations are pre-allowed. Others will require permission.");
+    println!("Use --stream/-s flag to enable streaming responses.");
+    println!("Use --think/-t flag to enable extended thinking.\n");
 
     // --- Step 1: Create LLM provider ---
     println!("[Setup] Creating LLM provider...");
@@ -111,10 +118,22 @@ async fn main() -> Result<()> {
     // Clone todo_manager for the injection closure
     let todo_for_injection = todo_manager.clone();
 
-    let config = AgentConfig::new(SYSTEM_PROMPT)
+    // Check if streaming is requested via command line
+    let streaming = args.iter().any(|a| a == "--stream" || a == "-s");
+    // Check if extended thinking is requested via command line
+    let thinking = args.iter().any(|a| a == "--think" || a == "-t");
+
+    let mut config = AgentConfig::new(SYSTEM_PROMPT)
         .with_tools(tools)
         .with_debug(true) // Enable debug logging
-        .with_injection_fn("todo_status", move |_internals, mut messages| {
+        .with_streaming(streaming); // Enable streaming if --stream flag is passed
+
+    // Enable extended thinking if --think flag is passed
+    if thinking {
+        config = config.with_thinking(16000); // 16k token budget for thinking
+    }
+
+    let config = config.with_injection_fn("todo_status", move |_internals, mut messages| {
             // Only inject reminder if todo list is empty
             if todo_for_injection.is_empty() {
                 inject_system_reminder(
@@ -125,7 +144,11 @@ async fn main() -> Result<()> {
             messages
         });
 
-    println!("[Setup] AgentConfig created with debug logging and todo reminder injection");
+    println!(
+        "[Setup] AgentConfig created with debug logging{}{} and todo reminder injection",
+        if streaming { ", streaming enabled" } else { "" },
+        if thinking { ", extended thinking enabled" } else { "" }
+    );
 
     // --- Step 7: Create StandardAgent ---
     let agent = StandardAgent::new(config, llm);

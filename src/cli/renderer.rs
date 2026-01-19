@@ -143,7 +143,7 @@ impl ConsoleRenderer {
     async fn render_response(&self) -> io::Result<()> {
         let mut rx = self.handle.subscribe();
         let mut in_text = false;
-        let mut thinking_buffer = String::new();
+        let mut in_thinking = false;
 
         loop {
             match rx.recv().await {
@@ -164,16 +164,20 @@ impl ConsoleRenderer {
                             }
                         }
 
-                        // Thinking
+                        // Thinking - stream in real-time
                         OutputChunk::ThinkingDelta(text) => {
                             if self.show_thinking {
-                                thinking_buffer.push_str(&text);
+                                if !in_thinking {
+                                    self.console.print_thinking_prefix();
+                                    in_thinking = true;
+                                }
+                                self.console.print_thinking_chunk(&text);
                             }
                         }
                         OutputChunk::ThinkingComplete(_) => {
-                            if self.show_thinking && !thinking_buffer.is_empty() {
-                                self.console.print_thinking_block(&thinking_buffer);
-                                thinking_buffer.clear();
+                            if self.show_thinking && in_thinking {
+                                self.console.print_thinking_suffix();
+                                in_thinking = false;
                             }
                         }
 
