@@ -1,7 +1,9 @@
 pub mod anthropic;
+pub mod auth;
 pub mod types;
 
 pub use anthropic::{define_tool, AnthropicProvider};
+pub use auth::{auth_provider, AuthConfig, AuthProvider};
 pub use types::{
     ContentBlock, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
     ContentBlockStopEvent, ContentDelta, DeltaUsage, Message, MessageContent,

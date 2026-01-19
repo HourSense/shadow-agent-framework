@@ -28,7 +28,7 @@ use shadow_agent_sdk::{
     cli::ConsoleRenderer,
     helpers::{inject_system_reminder, TodoListManager},
     hooks::{HookContext, HookEvent, HookRegistry, HookResult},
-    llm::AnthropicProvider,
+    llm::{AnthropicProvider, AuthConfig},
     runtime::AgentRuntime,
     session::{AgentSession, SessionStorage},
 };
@@ -65,10 +65,31 @@ async fn main() -> Result<()> {
     println!("Use --stream/-s flag to enable streaming responses.");
     println!("Use --think/-t flag to enable extended thinking.\n");
 
-    // --- Step 1: Create LLM provider ---
-    println!("[Setup] Creating LLM provider...");
-    let llm = Arc::new(AnthropicProvider::from_env()?);
-    println!("[Setup] Model: {}", llm.model());
+    // --- Step 1: Create LLM provider with dynamic auth ---
+    println!("[Setup] Creating LLM provider with dynamic auth...");
+
+    // Using dynamic auth provider - callback is called before each API request
+    // This demonstrates the pattern for JWT tokens that expire frequently
+    let llm = Arc::new(
+        AnthropicProvider::with_auth_provider(|| async {
+            // Read API key from ANTHROPIC_KEY (not ANTHROPIC_API_KEY)
+            // In production, this would fetch a fresh JWT from your auth service
+            let api_key = env::var("ANTHROPIC_KEY")
+                .map_err(|_| anyhow::anyhow!("ANTHROPIC_KEY environment variable not set"))?;
+
+            // Return auth config with Anthropic's default base URL
+            Ok(AuthConfig::with_base_url(
+                api_key,
+                "https://api.anthropic.com/v1/messages",
+            ))
+        })
+        .with_model(
+            env::var("ANTHROPIC_MODEL")
+                .unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string()),
+        )
+        .with_max_tokens(32000),
+    );
+    println!("[Setup] Model: {} (using dynamic auth)", llm.model());
 
     // --- Step 2: Create runtime with global Read permission ---
     let runtime = AgentRuntime::new();

@@ -2,39 +2,73 @@
 //!
 //! This module provides a direct HTTP client for the Anthropic Messages API,
 //! without relying on any community SDK.
+//!
+//! # Authentication
+//!
+//! Supports both static and dynamic authentication:
+//!
+//! ```ignore
+//! // Static auth from environment
+//! let llm = AnthropicProvider::from_env()?;
+//!
+//! // Static auth with explicit key
+//! let llm = AnthropicProvider::new("sk-...")?;
+//!
+//! // Dynamic auth with callback (for JWT/proxy scenarios)
+//! let llm = AnthropicProvider::with_auth_provider(|| async {
+//!     let jwt = refresh_token().await?;
+//!     Ok(AuthConfig::with_base_url(jwt, "https://proxy.example.com/v1/messages"))
+//! });
+//! ```
 
 use anyhow::{Context, Result};
 use futures::stream::Stream;
 use futures::StreamExt;
 use reqwest::Client;
 use std::env;
+use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use tokio::io::AsyncBufReadExt;
 use tokio_util::io::StreamReader;
 
+use super::auth::{auth_provider, AuthConfig, AuthProvider, AuthSource};
 use super::types::{
     Message, MessageRequest, MessageResponse, RawStreamEvent, StreamEvent, ThinkingConfig,
     ToolChoice, ToolDefinition,
 };
 
-const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
+const DEFAULT_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Anthropic LLM provider using direct HTTP calls
+///
+/// Supports both static and dynamic authentication for scenarios like:
+/// - Standard API key authentication
+/// - JWT tokens with expiration (proxy servers)
+/// - Per-request credential refresh
 pub struct AnthropicProvider {
     client: Client,
-    api_key: String,
+    auth: AuthSource,
     model: String,
     max_tokens: u32,
 }
 
 impl AnthropicProvider {
     /// Create a new Anthropic provider from environment variables
+    ///
+    /// Reads from:
+    /// - `ANTHROPIC_API_KEY` (required)
+    /// - `ANTHROPIC_BASE_URL` (optional, defaults to Anthropic API)
+    /// - `ANTHROPIC_MODEL` (optional, defaults to claude-sonnet-4-5-20250929)
+    /// - `ANTHROPIC_MAX_TOKENS` (optional, defaults to 32000)
     pub fn from_env() -> Result<Self> {
         tracing::info!("Creating Anthropic provider from environment");
 
         let api_key = env::var("ANTHROPIC_API_KEY")
             .context("ANTHROPIC_API_KEY environment variable not set")?;
+
+        let base_url = env::var("ANTHROPIC_BASE_URL").ok();
 
         let model = env::var("ANTHROPIC_MODEL")
             .unwrap_or_else(|_| "claude-sonnet-4-5-20250929".to_string());
@@ -46,12 +80,18 @@ impl AnthropicProvider {
 
         tracing::info!("Using model: {}", model);
         tracing::info!("Max tokens: {}", max_tokens);
+        if let Some(ref url) = base_url {
+            tracing::info!("Using custom base URL: {}", url);
+        }
 
         let client = Client::new();
 
         Ok(Self {
             client,
-            api_key,
+            auth: AuthSource::Static(AuthConfig {
+                api_key,
+                base_url,
+            }),
             model,
             max_tokens,
         })
@@ -63,10 +103,51 @@ impl AnthropicProvider {
 
         Ok(Self {
             client,
-            api_key: api_key.into(),
+            auth: AuthSource::Static(AuthConfig::new(api_key)),
             model: "claude-sonnet-4-5-20250929".to_string(),
             max_tokens: 32000,
         })
+    }
+
+    /// Create a new Anthropic provider with an auth provider callback
+    ///
+    /// The callback is called before each API request to get fresh credentials.
+    /// This is useful for:
+    /// - JWT tokens that expire frequently
+    /// - Proxy servers that require per-request auth
+    /// - Rotating API keys
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let llm = AnthropicProvider::with_auth_provider(|| async {
+    ///     let jwt = my_auth_service.get_fresh_token().await?;
+    ///     Ok(AuthConfig::with_base_url(jwt, "https://my-proxy.com/v1/messages"))
+    /// });
+    /// ```
+    pub fn with_auth_provider<F, Fut>(provider: F) -> Self
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<AuthConfig>> + Send + 'static,
+    {
+        Self {
+            client: Client::new(),
+            auth: AuthSource::Dynamic(Arc::new(auth_provider(provider))),
+            model: "claude-sonnet-4-5-20250929".to_string(),
+            max_tokens: 32000,
+        }
+    }
+
+    /// Create a new Anthropic provider with a trait object auth provider
+    ///
+    /// Use this when you have a custom `AuthProvider` implementation.
+    pub fn with_auth_provider_boxed(provider: Arc<dyn AuthProvider>) -> Self {
+        Self {
+            client: Client::new(),
+            auth: AuthSource::Dynamic(provider),
+            model: "claude-sonnet-4-5-20250929".to_string(),
+            max_tokens: 32000,
+        }
     }
 
     /// Set the model to use
@@ -168,15 +249,20 @@ impl AnthropicProvider {
         tracing::debug!("Model: {}", request.model);
         tracing::debug!("Max tokens: {}", request.max_tokens);
 
+        // Get auth credentials (static or from provider)
+        let auth_config = self.auth.get_auth().await
+            .context("Failed to get authentication credentials")?;
+        let api_url = auth_config.base_url.as_deref().unwrap_or(DEFAULT_API_URL);
+
         let request_json = serde_json::to_string(request)
             .context("Failed to serialize request")?;
         tracing::debug!("Request JSON: {}", request_json);
 
         let response = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(api_url)
             .header("Content-Type", "application/json")
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &auth_config.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", "interleaved-thinking-2025-05-14")
             .body(request_json)
@@ -294,15 +380,20 @@ impl AnthropicProvider {
         tracing::debug!("Model: {}", request.model);
         tracing::debug!("Max tokens: {}", request.max_tokens);
 
+        // Get auth credentials (static or from provider)
+        let auth_config = self.auth.get_auth().await
+            .context("Failed to get authentication credentials")?;
+        let api_url = auth_config.base_url.as_deref().unwrap_or(DEFAULT_API_URL);
+
         let request_json =
             serde_json::to_string(request).context("Failed to serialize request")?;
         tracing::debug!("Request JSON: {}", request_json);
 
         let response = self
             .client
-            .post(ANTHROPIC_API_URL)
+            .post(api_url)
             .header("Content-Type", "application/json")
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &auth_config.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("anthropic-beta", "interleaved-thinking-2025-05-14")
             .body(request_json)
