@@ -6,6 +6,7 @@
 //! - Session persistence
 //! - Debug logging (when enabled)
 //! - Streaming responses (when enabled)
+//! - Automatic conversation naming (after first turn)
 
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use futures::StreamExt;
 use serde_json::Value;
 
 use crate::core::{FrameworkResult, InputMessage};
-use crate::helpers::Debugger;
+use crate::helpers::{ConversationNamer, Debugger};
 use crate::hooks::HookContext;
 use crate::llm::{
     AnthropicProvider, ContentBlock, ContentBlockStart, ContentDelta, Message, StopReason,
@@ -116,6 +117,14 @@ impl StandardAgent {
                             tracing::error!("[StandardAgent] Error processing turn: {}", e);
                             internals.send_error(format!("Error: {}", e));
                         }
+
+                        // Auto-name conversation after first turn
+                        if self.config.auto_name_conversation
+                            && internals.context.current_turn == 0
+                            && !internals.session.has_conversation_name()
+                        {
+                            self.generate_conversation_name(&mut internals).await;
+                        }
                     }
 
                     // Signal turn complete
@@ -151,6 +160,27 @@ impl StandardAgent {
         }
 
         Ok(())
+    }
+
+    /// Generate a conversation name using the ConversationNamer helper
+    async fn generate_conversation_name(&self, internals: &mut AgentInternals) {
+        tracing::debug!("[StandardAgent] Generating conversation name...");
+
+        let namer = ConversationNamer::new(&self.llm);
+        match namer.generate_name(internals.session.history()).await {
+            Ok(name) => {
+                tracing::info!("[StandardAgent] Generated conversation name: {}", name);
+                if let Err(e) = internals.session.set_conversation_name(&name) {
+                    tracing::warn!(
+                        "[StandardAgent] Failed to save conversation name: {}",
+                        e
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!("[StandardAgent] Failed to generate conversation name: {}", e);
+            }
+        }
     }
 
     /// Process a single user turn (may involve multiple LLM calls for tool use)

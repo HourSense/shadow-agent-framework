@@ -51,6 +51,10 @@ pub struct AgentConfig {
     /// Hooks for intercepting agent behavior
     /// Use hooks to block dangerous operations, modify tool inputs, auto-approve tools, etc.
     pub hooks: Option<Arc<HookRegistry>>,
+
+    /// Whether to automatically generate a conversation name after the first turn
+    /// Uses Haiku to create a short, descriptive name based on conversation content.
+    pub auto_name_conversation: bool,
 }
 
 impl AgentConfig {
@@ -66,6 +70,7 @@ impl AgentConfig {
             streaming_enabled: false,
             thinking: None,
             hooks: None,
+            auto_name_conversation: true,
         }
     }
 
@@ -185,6 +190,16 @@ impl AgentConfig {
         self
     }
 
+    /// Enable or disable automatic conversation naming
+    ///
+    /// When enabled (default), the agent will automatically generate a short,
+    /// descriptive name for the conversation after the first turn completes.
+    /// Uses Claude Haiku for fast, cheap naming.
+    pub fn with_auto_name(mut self, enabled: bool) -> Self {
+        self.auto_name_conversation = enabled;
+        self
+    }
+
     /// Get tool definitions (empty vec if no tools)
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tools
@@ -211,6 +226,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("streaming_enabled", &self.streaming_enabled)
             .field("thinking", &self.thinking)
             .field("hooks", &self.hooks.as_ref().map(|h| format!("{:?}", h)))
+            .field("auto_name_conversation", &self.auto_name_conversation)
             .finish()
     }
 }
@@ -224,6 +240,7 @@ mod tests {
         let config = AgentConfig::default();
         assert!(!config.debug_enabled);
         assert!(config.auto_save_session);
+        assert!(config.auto_name_conversation);
         assert_eq!(config.max_tool_iterations, 100);
     }
 

@@ -23,6 +23,11 @@ pub struct SessionMetadata {
     /// Description of what this agent does
     pub description: String,
 
+    /// Auto-generated name for this conversation based on content
+    /// This is typically set after the first turn by a conversation namer helper
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conversation_name: Option<String>,
+
     // --- Lineage ---
     /// Parent session ID (if this is a subagent)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -70,6 +75,7 @@ impl SessionMetadata {
             agent_type: agent_type.into(),
             name: name.into(),
             description: description.into(),
+            conversation_name: None,
             parent_session_id: None,
             parent_tool_use_id: None,
             child_session_ids: Vec::new(),
@@ -96,6 +102,7 @@ impl SessionMetadata {
             agent_type: agent_type.into(),
             name: name.into(),
             description: description.into(),
+            conversation_name: None,
             parent_session_id: Some(parent_session_id.into()),
             parent_tool_use_id: Some(parent_tool_use_id.into()),
             child_session_ids: Vec::new(),
@@ -133,6 +140,25 @@ impl SessionMetadata {
     pub fn add_child(&mut self, child_session_id: impl Into<String>) {
         self.child_session_ids.push(child_session_id.into());
         self.touch();
+    }
+
+    /// Set the conversation name
+    ///
+    /// This is typically called by a conversation namer helper after the first
+    /// turn to give the conversation a descriptive name based on its content.
+    pub fn set_conversation_name(&mut self, name: impl Into<String>) {
+        self.conversation_name = Some(name.into());
+        self.touch();
+    }
+
+    /// Get the conversation name
+    pub fn conversation_name(&self) -> Option<&str> {
+        self.conversation_name.as_deref()
+    }
+
+    /// Check if the conversation has been named
+    pub fn has_conversation_name(&self) -> bool {
+        self.conversation_name.is_some()
     }
 
     /// Set custom metadata
@@ -210,5 +236,45 @@ mod tests {
             meta.get_custom("key2").and_then(|v| v.as_i64()),
             Some(42)
         );
+    }
+
+    #[test]
+    fn test_conversation_name() {
+        let mut meta = SessionMetadata::new("session", "test", "Test", "Testing");
+
+        // Initially no conversation name
+        assert!(!meta.has_conversation_name());
+        assert!(meta.conversation_name().is_none());
+
+        // Set conversation name
+        meta.set_conversation_name("Help with Rust code");
+
+        assert!(meta.has_conversation_name());
+        assert_eq!(meta.conversation_name(), Some("Help with Rust code"));
+    }
+
+    #[test]
+    fn test_conversation_name_serialization() {
+        let mut meta = SessionMetadata::new("session", "test", "Test", "Testing");
+        meta.set_conversation_name("Debugging session");
+
+        // Serialize
+        let json = serde_json::to_string(&meta).unwrap();
+
+        // Deserialize
+        let loaded: SessionMetadata = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(loaded.conversation_name(), Some("Debugging session"));
+    }
+
+    #[test]
+    fn test_conversation_name_skipped_when_none() {
+        let meta = SessionMetadata::new("session", "test", "Test", "Testing");
+
+        // Serialize without conversation_name
+        let json = serde_json::to_string(&meta).unwrap();
+
+        // conversation_name should not be in the JSON when None
+        assert!(!json.contains("conversation_name"));
     }
 }

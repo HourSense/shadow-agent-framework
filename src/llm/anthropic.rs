@@ -172,6 +172,40 @@ impl AnthropicProvider {
         self.max_tokens
     }
 
+    /// Create a new provider with a different model, sharing the same auth
+    ///
+    /// This is useful for creating lightweight models (like Haiku) for simple tasks
+    /// while reusing the same authentication configuration.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let main_llm = AnthropicProvider::from_env()?;
+    /// let haiku_llm = main_llm.with_model_override("claude-3-5-haiku-20241022");
+    /// ```
+    pub fn with_model_override(&self, model: impl Into<String>) -> Self {
+        Self {
+            client: Client::new(),
+            auth: self.auth.clone(),
+            model: model.into(),
+            max_tokens: self.max_tokens,
+        }
+    }
+
+    /// Create a new provider with a different model and max tokens, sharing the same auth
+    pub fn with_model_and_tokens_override(
+        &self,
+        model: impl Into<String>,
+        max_tokens: u32,
+    ) -> Self {
+        Self {
+            client: Client::new(),
+            auth: self.auth.clone(),
+            model: model.into(),
+            max_tokens,
+        }
+    }
+
     /// Send a message and get a complete response (no tool calling)
     ///
     /// This is a simple method for basic conversations without tools.

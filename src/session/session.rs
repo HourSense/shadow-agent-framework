@@ -278,6 +278,27 @@ impl AgentSession {
         &self.metadata.provider
     }
 
+    /// Set the conversation name
+    ///
+    /// This is typically called by a conversation namer helper after the first
+    /// turn to give the conversation a descriptive name based on its content.
+    /// The name is persisted to disk immediately.
+    pub fn set_conversation_name(&mut self, name: impl Into<String>) -> FrameworkResult<()> {
+        self.metadata.set_conversation_name(name);
+        self.storage.save_metadata(&self.metadata)?;
+        Ok(())
+    }
+
+    /// Get the conversation name
+    pub fn conversation_name(&self) -> Option<&str> {
+        self.metadata.conversation_name()
+    }
+
+    /// Check if the conversation has been named
+    pub fn has_conversation_name(&self) -> bool {
+        self.metadata.has_conversation_name()
+    }
+
     /// Set custom metadata
     pub fn set_custom<T: Into<serde_json::Value>>(&mut self, key: impl Into<String>, value: T) {
         self.metadata.set_custom(key, value);
@@ -544,6 +565,36 @@ mod tests {
 
         assert_eq!(session.model(), "claude-opus-4-5-20251101");
         assert_eq!(session.provider(), "anthropic");
+    }
+
+    #[test]
+    fn test_conversation_name() {
+        let (storage, _temp) = create_test_storage();
+
+        let mut session = AgentSession::new_with_storage(
+            "conv_name_test",
+            "coder",
+            "Test",
+            "Testing",
+            storage.clone(),
+        )
+        .unwrap();
+
+        // Initially no conversation name
+        assert!(!session.has_conversation_name());
+        assert!(session.conversation_name().is_none());
+
+        // Set conversation name
+        session
+            .set_conversation_name("Help with Rust code")
+            .unwrap();
+
+        assert!(session.has_conversation_name());
+        assert_eq!(session.conversation_name(), Some("Help with Rust code"));
+
+        // Reload and verify persistence
+        let reloaded = AgentSession::load_with_storage("conv_name_test", storage).unwrap();
+        assert_eq!(reloaded.conversation_name(), Some("Help with Rust code"));
     }
 
     #[test]

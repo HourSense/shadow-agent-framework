@@ -4,8 +4,10 @@
 //! - `TodoListManager` - Tracks tasks and which turn they were last updated
 //! - `ContextInjection` - Modify messages before each LLM call
 //! - `Debugger` - Log API calls and tool executions for debugging
+//! - `ConversationNamer` - Generate descriptive names for conversations
 
 mod context_injection;
+mod conversation_namer;
 mod debugger;
 mod todo_manager;
 
@@ -13,6 +15,7 @@ pub use context_injection::{
     append_to_last_message, inject_system_reminder, prepend_to_first_user_message,
     BoxedInjection, ContextInjection, FnInjection, InjectionChain, SharedInjection,
 };
+pub use conversation_namer::{generate_conversation_name, ConversationNamer};
 pub use debugger::{
     ApiRequestEvent, ApiResponseEvent, Debugger, EventType, ToolCallEvent, ToolResultEvent,
 };

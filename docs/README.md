@@ -370,6 +370,25 @@ if AgentSession::exists("session-id") {
 }
 ```
 
+#### Conversation Naming
+
+Sessions support an optional conversation name that describes the conversation content:
+
+```rust
+// Set conversation name (typically after first turn)
+session.set_conversation_name("Help with Rust debugging")?;
+
+// Get conversation name
+if let Some(name) = session.conversation_name() {
+    println!("Conversation: {}", name);
+}
+
+// Check if named
+if !session.has_conversation_name() {
+    // Generate name using a conversation namer helper
+}
+```
+
 #### Custom Storage Location
 
 ```rust
@@ -720,6 +739,9 @@ let llm = AnthropicProvider::from_env()?
 
 // Wrap in Arc for sharing
 let llm = Arc::new(llm);
+
+// Create a variant with a different model (shares auth)
+let haiku_llm = llm.with_model_override("claude-3-5-haiku-20241022");
 ```
 
 #### Dynamic Authentication
@@ -865,6 +887,37 @@ let config = AgentConfig::new("...")
 // - tool_call_{n}.json
 // - tool_result_{n}.json
 ```
+
+#### Conversation Namer
+
+The `StandardAgent` automatically generates descriptive names for conversations after the first turn (enabled by default). To disable:
+
+```rust
+let config = AgentConfig::new("...")
+    .with_auto_name(false);  // Disable automatic naming
+```
+
+You can also use the helper manually:
+
+```rust
+use shadow_agent_sdk::helpers::{ConversationNamer, generate_conversation_name};
+
+// Using the helper struct
+let namer = ConversationNamer::new(&llm);
+let name = namer.generate_name(session.history()).await?;
+session.set_conversation_name(&name)?;
+
+// Or using the convenience function
+let name = generate_conversation_name(&llm, session.history()).await?;
+session.set_conversation_name(&name)?;
+```
+
+The namer:
+- Uses Claude Haiku for fast, cheap naming
+- Generates 3-7 word descriptive names
+- Analyzes the conversation content including tool usage
+- Reuses the same auth configuration as your main LLM
+- Automatically integrated into StandardAgent after first turn
 
 ---
 
@@ -1171,6 +1224,7 @@ cargo run --example session_browser
 | `with_max_tool_iterations(n)` | Limit tool call loops |
 | `with_auto_save(bool)` | Auto-save session |
 | `with_injection_chain(chain)` | Set context injections |
+| `with_auto_name(bool)` | Auto-name conversations (default: true) |
 
 ### Session Methods
 
@@ -1185,6 +1239,9 @@ cargo run --example session_browser
 | `AgentSession::get_history(id)` | Get messages only |
 | `AgentSession::get_metadata(id)` | Get metadata only |
 | `AgentSession::exists(id)` | Check existence |
+| `session.set_conversation_name(name)` | Set conversation name |
+| `session.conversation_name()` | Get conversation name |
+| `session.has_conversation_name()` | Check if named |
 
 ---
 

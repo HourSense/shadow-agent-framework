@@ -110,6 +110,15 @@ pub(crate) enum AuthSource {
     Dynamic(Arc<dyn AuthProvider>),
 }
 
+impl Clone for AuthSource {
+    fn clone(&self) -> Self {
+        match self {
+            AuthSource::Static(config) => AuthSource::Static(config.clone()),
+            AuthSource::Dynamic(provider) => AuthSource::Dynamic(Arc::clone(provider)),
+        }
+    }
+}
+
 impl AuthSource {
     /// Get auth config (either returns static or calls provider)
     pub(crate) async fn get_auth(&self) -> Result<AuthConfig> {
