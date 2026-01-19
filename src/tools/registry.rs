@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use super::tool::{Tool, ToolInfo, ToolResult};
 use crate::llm::ToolDefinition;
+use crate::runtime::AgentInternals;
 
 /// Registry that holds all available tools
 pub struct ToolRegistry {
@@ -47,7 +48,12 @@ impl ToolRegistry {
     }
 
     /// Execute a tool by name
-    pub async fn execute(&self, name: &str, input: &Value) -> Result<ToolResult> {
+    pub async fn execute(
+        &self,
+        name: &str,
+        input: &Value,
+        internals: &mut AgentInternals,
+    ) -> Result<ToolResult> {
         let tool = self
             .tools
             .get(name)
@@ -56,7 +62,7 @@ impl ToolRegistry {
         tracing::info!("Executing tool: {}", name);
         tracing::debug!("Input: {:?}", input);
 
-        let result = tool.execute(input).await?;
+        let result = tool.execute(input, internals).await?;
 
         tracing::debug!(
             "Tool {} completed. Is error: {}",

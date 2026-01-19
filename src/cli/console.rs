@@ -1,16 +1,17 @@
 use colored::*;
 use std::io::{self, Write};
+use std::sync::Arc;
 
+use crate::helpers::{TodoItem, TodoListManager, TodoStatus};
 use crate::permissions::{PermissionDecision, PermissionRequest};
-use crate::tools::{TodoItem, TodoList, TodoStatus};
 
 /// Console handles all terminal I/O with colored formatting
 pub struct Console {
     user_color: Color,
     assistant_color: Color,
     tool_color: Color,
-    /// Optional shared todo list for display
-    todo_list: Option<TodoList>,
+    /// Optional todo list manager for display
+    todo_manager: Option<Arc<TodoListManager>>,
 }
 
 impl Console {
@@ -20,17 +21,17 @@ impl Console {
             user_color: Color::Cyan,
             assistant_color: Color::Green,
             tool_color: Color::Magenta,
-            todo_list: None,
+            todo_manager: None,
         }
     }
 
-    /// Create a new Console with a shared todo list
-    pub fn with_todo_list(todo_list: TodoList) -> Self {
+    /// Create a new Console with a TodoListManager
+    pub fn with_todo_manager(manager: Arc<TodoListManager>) -> Self {
         Self {
             user_color: Color::Cyan,
             assistant_color: Color::Green,
             tool_color: Color::Magenta,
-            todo_list: Some(todo_list),
+            todo_manager: Some(manager),
         }
     }
 
@@ -40,13 +41,13 @@ impl Console {
             user_color,
             assistant_color,
             tool_color,
-            todo_list: None,
+            todo_manager: None,
         }
     }
 
-    /// Set the todo list
-    pub fn set_todo_list(&mut self, todo_list: TodoList) {
-        self.todo_list = Some(todo_list);
+    /// Set the todo manager
+    pub fn set_todo_manager(&mut self, manager: Arc<TodoListManager>) {
+        self.todo_manager = Some(manager);
     }
 
     /// Print a user message with colored formatting
@@ -243,8 +244,8 @@ impl Console {
     /// Shows todos at the bottom of the console when the agent is processing.
     /// Format matches Claude Code style.
     pub fn print_todos(&self) {
-        if let Some(ref todo_list) = self.todo_list {
-            let todos = todo_list.read().unwrap();
+        if let Some(ref manager) = self.todo_manager {
+            let todos = manager.get_todos();
             if todos.is_empty() {
                 return;
             }
