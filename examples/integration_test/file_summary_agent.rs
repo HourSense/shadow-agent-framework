@@ -95,9 +95,10 @@ pub async fn spawn_file_summary_agent(
     // Create tool registry with Read only
     let tools = Arc::new(create_tools()?);
 
-    // Create agent config - no debug logging for subagents
+    // Create agent config - enable streaming for subagent
     let agent_config = AgentConfig::new(SYSTEM_PROMPT)
-        .with_tools(tools);
+        .with_tools(tools)
+        .with_streaming(true); // Enable streaming so parent can see tokens as they come
 
     // Create the agent
     let agent = StandardAgent::new(agent_config, config.llm.clone());

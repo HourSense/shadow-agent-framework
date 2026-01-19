@@ -193,8 +193,11 @@ impl ToolExecutor {
         tool_id: &str,
         input: &Value,
     ) -> ToolResult {
+        // Set the current tool_use_id on context so tools can access it
+        internals.context.current_tool_use_id = Some(tool_id.to_string());
+
         // Update state
-        internals.set_executing_tool(tool_name, "").await;
+        internals.set_executing_tool(tool_name, tool_id).await;
 
         // Log tool call if debugger is enabled
         if let Some(debugger) = internals.context.get_resource::<Debugger>() {
@@ -242,6 +245,9 @@ impl ToolExecutor {
 
         // Send tool end notification
         internals.send_tool_end(tool_name, result.clone());
+
+        // Clear the current tool_use_id
+        internals.context.current_tool_use_id = None;
 
         result
     }

@@ -19,6 +19,7 @@ use crate::session::AgentSession;
 use super::channels::create_agent_channels;
 use super::handle::AgentHandle;
 use super::internals::AgentInternals;
+use super::subagent_manager::SubAgentManager;
 
 /// Runtime for spawning and managing agents
 ///
@@ -115,12 +116,18 @@ impl AgentRuntime {
         let state = Arc::new(RwLock::new(AgentState::Idle));
 
         // Create context from session
-        let context = AgentContext::new(
+        let mut context = AgentContext::new(
             session.session_id(),
             session.agent_type(),
             session.name(),
             session.description(),
         );
+
+        // Add SubAgentManager to context for tracking spawned subagents
+        context.insert_resource(SubAgentManager::new());
+
+        // Store runtime reference so agents can spawn subagents
+        context.insert_resource(self.clone());
 
         // Create permission manager with shared global + local rules
         let permissions = PermissionManager::with_local_rules(

@@ -93,12 +93,6 @@ impl Tool for SummarizeFileTool {
             .clone()
             .unwrap_or_else(|| "unknown".to_string());
 
-        // Notify that we're spawning a subagent
-        internals.send(OutputChunk::SubAgentSpawned {
-            session_id: format!("file-summary-{}", &tool_use_id),
-            agent_type: "file-summary-agent".to_string(),
-        });
-
         // Create config for spawning
         let config = FileSummaryAgentConfig::new(self.llm.clone(), self.runtime.clone());
 
@@ -114,6 +108,12 @@ impl Tool for SummarizeFileTool {
             Ok(h) => h,
             Err(e) => return Ok(ToolResult::error(format!("Failed to spawn subagent: {}", e))),
         };
+
+        // Notify that we spawned a subagent (AFTER spawning, so we have the correct session_id)
+        internals.send(OutputChunk::SubAgentSpawned {
+            session_id: handle.session_id().to_string(),
+            agent_type: "file-summary-agent".to_string(),
+        });
 
         // Subscribe to subagent output
         let mut rx = handle.subscribe();

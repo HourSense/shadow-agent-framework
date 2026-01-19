@@ -364,6 +364,138 @@ impl AgentInternals {
     pub fn set_interactive(&mut self, interactive: bool) {
         self.permissions.set_interactive(interactive);
     }
+
+    // =========================================================================
+    // SubAgent Methods
+    // =========================================================================
+
+    /// Spawn a subagent and register it with this agent's SubAgentManager
+    ///
+    /// This is the preferred way to spawn subagents from within an agent,
+    /// as it automatically:
+    /// 1. Creates the subagent with proper parent linkage
+    /// 2. Registers the handle with this agent's SubAgentManager
+    /// 3. Sends a SubAgentSpawned notification to subscribers
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let handle = internals.spawn_subagent(
+    ///     "sub-1",
+    ///     "researcher",
+    ///     "Research Agent",
+    ///     "Researches topics",
+    ///     "tool_123",
+    ///     |sub_internals| async move {
+    ///         // Subagent logic here
+    ///         Ok(())
+    ///     },
+    /// ).await?;
+    /// ```
+    pub async fn spawn_subagent<F, Fut>(
+        &self,
+        session_id: impl Into<String>,
+        agent_type: impl Into<String>,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        tool_use_id: impl Into<String>,
+        agent_fn: F,
+    ) -> FrameworkResult<super::AgentHandle>
+    where
+        F: FnOnce(AgentInternals) -> Fut + Send + 'static,
+        Fut: std::future::Future<Output = FrameworkResult<()>> + Send + 'static,
+    {
+        let session_id = session_id.into();
+        let agent_type = agent_type.into();
+        let name_str = name.into();
+        let description_str = description.into();
+
+        // Get the runtime from context
+        let runtime = self
+            .context
+            .get_resource::<super::AgentRuntime>()
+            .ok_or_else(|| FrameworkError::Other("Runtime not found in context".into()))?;
+
+        // Spawn the subagent
+        let handle = runtime
+            .spawn_subagent(
+                &session_id,
+                &agent_type,
+                &name_str,
+                &description_str,
+                self.session_id(),
+                tool_use_id,
+                agent_fn,
+            )
+            .await?;
+
+        // Register with our SubAgentManager
+        if let Some(manager) = self.context.get_resource::<super::SubAgentManager>() {
+            manager.register(&session_id, handle.clone());
+        }
+
+        // Notify subscribers
+        self.send(OutputChunk::SubAgentSpawned {
+            session_id: session_id.clone(),
+            agent_type: agent_type.clone(),
+        });
+
+        tracing::info!(
+            "[{}] Spawned subagent: {} ({})",
+            self.session_id(),
+            session_id,
+            agent_type
+        );
+
+        Ok(handle)
+    }
+
+    /// Get the SubAgentManager for this agent
+    ///
+    /// Returns None if no subagents have been spawned yet.
+    pub fn subagent_manager(&self) -> Option<std::sync::Arc<super::SubAgentManager>> {
+        self.context.get_resource::<super::SubAgentManager>()
+    }
+
+    /// Get a subagent's handle by session ID
+    pub fn get_subagent(&self, session_id: &str) -> Option<super::AgentHandle> {
+        self.subagent_manager()
+            .and_then(|m| m.get(session_id))
+    }
+
+    /// List all active subagent session IDs
+    pub fn active_subagents(&self) -> Vec<String> {
+        self.subagent_manager()
+            .map(|m| m.active_session_ids())
+            .unwrap_or_default()
+    }
+
+    /// Mark a subagent as completed
+    ///
+    /// Call this when a subagent finishes to track its result.
+    pub fn mark_subagent_completed(
+        &self,
+        session_id: &str,
+        result: Option<String>,
+        success: bool,
+        error: Option<String>,
+    ) {
+        if let Some(manager) = self.subagent_manager() {
+            // Get agent type from handle before marking complete
+            let agent_type = manager
+                .get(session_id)
+                .map(|_| "unknown") // We don't store agent_type in handle
+                .unwrap_or("unknown");
+
+            manager.mark_completed(session_id, agent_type, result.clone(), success, error);
+
+            // Notify subscribers
+            self.send(OutputChunk::SubAgentComplete {
+                session_id: session_id.to_string(),
+                result,
+            });
+        }
+    }
 }
 
 impl std::fmt::Debug for AgentInternals {

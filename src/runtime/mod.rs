@@ -13,8 +13,10 @@ pub mod channels;
 pub mod handle;
 pub mod internals;
 pub mod runtime;
+pub mod subagent_manager;
 
 pub use channels::{InputReceiver, InputSender, OutputReceiver, OutputSender};
 pub use handle::AgentHandle;
 pub use internals::AgentInternals;
 pub use runtime::AgentRuntime;
+pub use subagent_manager::{CompletedSubAgent, SubAgentManager};
