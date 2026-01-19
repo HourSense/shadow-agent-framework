@@ -14,3 +14,6 @@ pub mod helpers;
 
 // Standardized agent implementation
 pub mod agent;
+
+// Hooks for intercepting agent behavior
+pub mod hooks;

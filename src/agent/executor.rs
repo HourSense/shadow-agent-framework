@@ -1,37 +1,81 @@
 //! Tool Executor
 //!
-//! Handles permission-aware tool execution with optional debug logging.
+//! Handles permission-aware tool execution with optional debug logging and hooks.
 
 use serde_json::Value;
 
 use crate::core::InputMessage;
 use crate::helpers::Debugger;
+use crate::hooks::{HookContext, HookRegistry, PermissionDecision};
 use crate::permissions::{CheckResult, PermissionRule, PermissionScope};
 use crate::runtime::AgentInternals;
 use crate::tools::{ToolRegistry, ToolResult};
 
-/// Handles tool execution with permission checking
+/// Handles tool execution with permission checking and hooks
 pub struct ToolExecutor;
 
 impl ToolExecutor {
-    /// Execute a tool with permission checking
+    /// Execute a tool with permission checking and hooks
     ///
-    /// This handles the full permission flow:
-    /// 1. Check if permission exists
-    /// 2. If not, ask user (via output channel)
-    /// 3. Wait for response
-    /// 4. Execute if allowed, return error if denied
+    /// This handles the full flow:
+    /// 1. Run PreToolUse hooks (can block, allow, or modify input)
+    /// 2. Check if permission exists (unless hook already decided)
+    /// 3. If not, ask user (via output channel)
+    /// 4. Wait for response
+    /// 5. Execute if allowed, return error if denied
+    /// 6. Run PostToolUse or PostToolUseFailure hooks
     pub async fn execute_with_permission(
         internals: &mut AgentInternals,
         tools: &ToolRegistry,
+        hooks: Option<&HookRegistry>,
         tool_name: &str,
         tool_id: &str,
         input: &Value,
     ) -> ToolResult {
-        let input_str = input.to_string();
+        let mut current_input = input.clone();
+
+        // === Run PreToolUse hooks ===
+        if let Some(hooks) = hooks {
+            let mut ctx = HookContext::pre_tool_use(internals, tool_name, &current_input, tool_id);
+            let result = hooks.run(&mut ctx);
+
+            // Hook may have modified tool_input
+            if let Some(modified_input) = ctx.tool_input {
+                current_input = modified_input;
+            }
+
+            // Handle permission decision from hooks
+            match result.decision {
+                Some(PermissionDecision::Deny) => {
+                    let reason = result
+                        .reason
+                        .unwrap_or_else(|| "Blocked by hook".to_string());
+                    tracing::info!("[Executor] Hook denied {}: {}", tool_name, reason);
+                    return ToolResult::error(format!("Hook denied: {}", reason));
+                }
+                Some(PermissionDecision::Allow) => {
+                    // Skip permission check, execute directly
+                    tracing::info!("[Executor] Hook allowed {} (skipping permission check)", tool_name);
+                    return Self::execute_with_hooks(
+                        internals,
+                        tools,
+                        Some(hooks),
+                        tool_name,
+                        tool_id,
+                        &current_input,
+                    )
+                    .await;
+                }
+                Some(PermissionDecision::Ask) | None => {
+                    // Fall through to normal permission check
+                }
+            }
+        }
+
+        let input_str = current_input.to_string();
 
         // Get tool info for better permission prompts
-        let tool_info = tools.get_tool_info(tool_name, input);
+        let tool_info = tools.get_tool_info(tool_name, &current_input);
         let action_desc = tool_info
             .as_ref()
             .map(|i| i.action_description.clone())
@@ -41,7 +85,8 @@ impl ToolExecutor {
         match internals.check_permission(tool_name, &input_str) {
             CheckResult::Allowed => {
                 tracing::info!("[Executor] Permission allowed for {}", tool_name);
-                Self::execute(internals, tools, tool_name, tool_id, input).await
+                Self::execute_with_hooks(internals, tools, hooks, tool_name, tool_id, &current_input)
+                    .await
             }
 
             CheckResult::Denied => {
@@ -51,7 +96,17 @@ impl ToolExecutor {
 
             CheckResult::AskUser => {
                 tracing::info!("[Executor] Asking user for permission: {}", tool_name);
-                Self::ask_and_execute(internals, tools, tool_name, tool_id, input, &action_desc, tool_info.and_then(|i| i.details)).await
+                Self::ask_and_execute(
+                    internals,
+                    tools,
+                    hooks,
+                    tool_name,
+                    tool_id,
+                    &current_input,
+                    &action_desc,
+                    tool_info.and_then(|i| i.details),
+                )
+                .await
             }
         }
     }
@@ -60,6 +115,7 @@ impl ToolExecutor {
     async fn ask_and_execute(
         internals: &mut AgentInternals,
         tools: &ToolRegistry,
+        hooks: Option<&HookRegistry>,
         tool_name: &str,
         tool_id: &str,
         input: &Value,
@@ -98,7 +154,8 @@ impl ToolExecutor {
 
                 if allowed {
                     tracing::info!("[Executor] User allowed {}", tool_name);
-                    Self::execute(internals, tools, tool_name, tool_id, input).await
+                    Self::execute_with_hooks(internals, tools, hooks, tool_name, tool_id, input)
+                        .await
                 } else {
                     tracing::info!("[Executor] User denied {}", tool_name);
                     ToolResult::error(format!("User denied permission for: {}", tool_name))
@@ -127,10 +184,11 @@ impl ToolExecutor {
         }
     }
 
-    /// Execute a tool (permission already granted)
-    pub async fn execute(
+    /// Execute a tool with post-execution hooks
+    async fn execute_with_hooks(
         internals: &mut AgentInternals,
         tools: &ToolRegistry,
+        hooks: Option<&HookRegistry>,
         tool_name: &str,
         tool_id: &str,
         input: &Value,
@@ -150,8 +208,29 @@ impl ToolExecutor {
 
         // Execute
         let result = match tools.execute(tool_name, input, internals).await {
-            Ok(result) => result,
-            Err(e) => ToolResult::error(format!("Tool execution failed: {}", e)),
+            Ok(result) => {
+                // Run PostToolUse hooks
+                if let Some(hooks) = hooks {
+                    let mut ctx =
+                        HookContext::post_tool_use(internals, tool_name, input, tool_id, &result);
+                    let _hook_result = hooks.run(&mut ctx);
+                    // PostToolUse hooks are for logging/observation, we don't act on the result
+                }
+                result
+            }
+            Err(e) => {
+                let error_msg = format!("Tool execution failed: {}", e);
+
+                // Run PostToolUseFailure hooks
+                if let Some(hooks) = hooks {
+                    let mut ctx = HookContext::post_tool_use_failure(
+                        internals, tool_name, input, tool_id, &error_msg,
+                    );
+                    let _hook_result = hooks.run(&mut ctx);
+                }
+
+                ToolResult::error(error_msg)
+            }
         };
 
         // Log tool result if debugger is enabled
@@ -165,5 +244,16 @@ impl ToolExecutor {
         internals.send_tool_end(tool_name, result.clone());
 
         result
+    }
+
+    /// Execute a tool without hooks (for backwards compatibility)
+    pub async fn execute(
+        internals: &mut AgentInternals,
+        tools: &ToolRegistry,
+        tool_name: &str,
+        tool_id: &str,
+        input: &Value,
+    ) -> ToolResult {
+        Self::execute_with_hooks(internals, tools, None, tool_name, tool_id, input).await
     }
 }

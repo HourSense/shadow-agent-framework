@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use crate::helpers::InjectionChain;
+use crate::hooks::HookRegistry;
 use crate::llm::ThinkingConfig;
 use crate::tools::ToolRegistry;
 
@@ -46,6 +47,10 @@ pub struct AgentConfig {
     /// Extended thinking configuration (optional)
     /// When enabled, Claude will show its step-by-step reasoning process.
     pub thinking: Option<ThinkingConfig>,
+
+    /// Hooks for intercepting agent behavior
+    /// Use hooks to block dangerous operations, modify tool inputs, auto-approve tools, etc.
+    pub hooks: Option<Arc<HookRegistry>>,
 }
 
 impl AgentConfig {
@@ -60,6 +65,7 @@ impl AgentConfig {
             debug_enabled: false,
             streaming_enabled: false,
             thinking: None,
+            hooks: None,
         }
     }
 
@@ -147,6 +153,38 @@ impl AgentConfig {
         self
     }
 
+    /// Set the hook registry for intercepting agent behavior
+    ///
+    /// Hooks allow you to:
+    /// - Block dangerous operations before they execute
+    /// - Modify tool arguments (e.g., rewrite paths for remote filesystem)
+    /// - Auto-approve certain tools
+    /// - Log and audit tool calls
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let mut hooks = HookRegistry::new();
+    /// hooks.add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx| {
+    ///     if ctx.tool_input.as_ref()
+    ///         .and_then(|v| v.get("command"))
+    ///         .and_then(|v| v.as_str())
+    ///         .map(|c| c.contains("rm -rf"))
+    ///         .unwrap_or(false)
+    ///     {
+    ///         HookResult::deny("Dangerous command blocked")
+    ///     } else {
+    ///         HookResult::none()
+    ///     }
+    /// })?;
+    ///
+    /// let config = AgentConfig::new("...").with_hooks(hooks);
+    /// ```
+    pub fn with_hooks(mut self, hooks: HookRegistry) -> Self {
+        self.hooks = Some(Arc::new(hooks));
+        self
+    }
+
     /// Get tool definitions (empty vec if no tools)
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tools
@@ -172,6 +210,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("debug_enabled", &self.debug_enabled)
             .field("streaming_enabled", &self.streaming_enabled)
             .field("thinking", &self.thinking)
+            .field("hooks", &self.hooks.as_ref().map(|h| format!("{:?}", h)))
             .finish()
     }
 }

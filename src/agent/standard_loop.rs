@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::core::{FrameworkResult, InputMessage};
 use crate::helpers::Debugger;
+use crate::hooks::HookContext;
 use crate::llm::{
     AnthropicProvider, ContentBlock, ContentBlockStart, ContentDelta, Message, StopReason,
     StreamEvent,
@@ -87,10 +88,34 @@ impl StandardAgent {
                     tracing::info!("[StandardAgent] Received: {}", text);
                     internals.set_processing().await;
 
-                    // Process the user message
-                    if let Err(e) = self.process_turn(&mut internals, &text).await {
-                        tracing::error!("[StandardAgent] Error processing turn: {}", e);
-                        internals.send_error(format!("Error: {}", e));
+                    // Run UserPromptSubmit hooks
+                    let mut current_text = text.clone();
+                    let mut should_process = true;
+
+                    if let Some(ref hooks) = self.config.hooks {
+                        let mut ctx = HookContext::user_prompt_submit(&mut internals, &text);
+                        let result = hooks.run(&mut ctx);
+
+                        // Hook may have modified the prompt
+                        if let Some(modified) = ctx.user_prompt {
+                            current_text = modified;
+                        }
+
+                        // Check if hook denied the prompt
+                        if let Some(crate::hooks::PermissionDecision::Deny) = result.decision {
+                            let reason = result.reason.unwrap_or_else(|| "Blocked by hook".to_string());
+                            tracing::info!("[StandardAgent] UserPromptSubmit hook denied: {}", reason);
+                            internals.send_error(format!("Prompt blocked: {}", reason));
+                            should_process = false;
+                        }
+                    }
+
+                    // Process the user message (if not blocked by hook)
+                    if should_process {
+                        if let Err(e) = self.process_turn(&mut internals, &current_text).await {
+                            tracing::error!("[StandardAgent] Error processing turn: {}", e);
+                            internals.send_error(format!("Error: {}", e));
+                        }
                     }
 
                     // Signal turn complete
@@ -199,7 +224,8 @@ impl StandardAgent {
 
                     // Execute tool with permission check (if tools configured)
                     let result = if let Some(ref tools) = self.config.tools {
-                        ToolExecutor::execute_with_permission(internals, tools, name, id, input)
+                        let hooks = self.config.hooks.as_deref();
+                        ToolExecutor::execute_with_permission(internals, tools, hooks, name, id, input)
                             .await
                     } else {
                         ToolResult::error(format!(

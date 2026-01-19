@@ -1,0 +1,69 @@
+//! Hooks Module
+//!
+//! Intercept and control agent behavior at key execution points.
+//!
+//! # Overview
+//!
+//! Hooks let you:
+//! - Block dangerous operations before they execute
+//! - Modify tool arguments (e.g., rewrite paths for remote filesystem)
+//! - Auto-approve certain tools
+//! - Log and audit tool calls
+//! - Filter or modify conversation history
+//!
+//! # Example
+//!
+//! ```ignore
+//! use shadow_agent_sdk::hooks::{HookRegistry, HookEvent, HookResult};
+//!
+//! let mut hooks = HookRegistry::new();
+//!
+//! // Block dangerous commands
+//! hooks.add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx| async move {
+//!     let cmd = ctx.tool_input.as_ref()
+//!         .and_then(|v| v.get("command"))
+//!         .and_then(|v| v.as_str())
+//!         .unwrap_or("");
+//!
+//!     if cmd.contains("rm -rf") {
+//!         HookResult::deny("Dangerous command blocked")
+//!     } else {
+//!         HookResult::none()
+//!     }
+//! })?;
+//!
+//! // Auto-approve read-only tools
+//! hooks.add_with_pattern(HookEvent::PreToolUse, "Read|Glob|Grep", |_ctx| async move {
+//!     HookResult::allow()
+//! })?;
+//!
+//! // Use with agent config
+//! let config = AgentConfig::new("You are helpful")
+//!     .with_hooks(hooks);
+//! ```
+//!
+//! # Hook Events
+//!
+//! | Event | When | Can modify |
+//! |-------|------|------------|
+//! | `PreToolUse` | Before tool executes | `tool_input`, messages, permission |
+//! | `PostToolUse` | After tool succeeds | messages (for logging) |
+//! | `PostToolUseFailure` | After tool fails | messages (for logging) |
+//! | `UserPromptSubmit` | When user sends prompt | `user_prompt`, messages |
+//!
+//! # HookResult
+//!
+//! Hooks return a `HookResult` that controls behavior:
+//!
+//! | Method | Effect |
+//! |--------|--------|
+//! | `HookResult::none()` | Continue normally |
+//! | `HookResult::allow()` | Skip permission check, execute tool |
+//! | `HookResult::deny("reason")` | Block tool, return error to LLM |
+//! | `HookResult::ask()` | Use normal permission flow |
+
+mod registry;
+mod types;
+
+pub use registry::{ArcHook, Hook, HookMatcher, HookRegistry};
+pub use types::{HookContext, HookEvent, HookResult, PermissionDecision};

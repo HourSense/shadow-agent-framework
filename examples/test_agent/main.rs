@@ -27,6 +27,7 @@ use shadow_agent_sdk::{
     agent::{AgentConfig, StandardAgent},
     cli::ConsoleRenderer,
     helpers::{inject_system_reminder, TodoListManager},
+    hooks::{HookContext, HookEvent, HookRegistry, HookResult},
     llm::AnthropicProvider,
     permissions::PermissionRule,
     runtime::AgentRuntime,
@@ -72,9 +73,7 @@ async fn main() -> Result<()> {
 
     // --- Step 2: Create runtime with global Read permission ---
     let runtime = AgentRuntime::new();
-    runtime
-        .global_permissions()
-        .add_rule(PermissionRule::allow_tool("Read"));
+    runtime.global_permissions();
     println!("[Setup] Runtime created (Read tool globally allowed)");
 
     // --- Step 3: Create tool registry ---
@@ -85,7 +84,39 @@ async fn main() -> Result<()> {
     let todo_manager = Arc::new(TodoListManager::new());
     println!("[Setup] TodoListManager created");
 
-    // --- Step 5: Create or load session ---
+    // --- Step 5: Create hooks ---
+    let mut hooks = HookRegistry::new();
+
+    // Block dangerous Bash commands
+    hooks
+        .add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx: &mut HookContext| {
+            println!("PreToolUse hook called with context: {:?}", ctx.tool_input.as_ref().map(|v| v.to_string()));
+            let cmd = ctx
+                .tool_input
+                .as_ref()
+                .and_then(|v| v.get("command"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            // Block dangerous patterns
+            if cmd.contains("rm ") {
+                HookResult::deny("Dangerous command blocked by safety hook")
+            } else {
+                HookResult::none() // Continue with normal permission flow
+            }
+        })
+        .expect("Invalid regex pattern");
+
+    // Auto-approve read-only tools (skip permission prompts)
+    hooks
+        .add_with_pattern(HookEvent::PreToolUse, "^(Read|Glob|Grep)$", |_ctx: &mut HookContext| {
+            HookResult::allow()
+        })
+        .expect("Invalid regex pattern");
+
+    println!("[Setup] Hooks configured: dangerous command blocker, read-only auto-approve");
+
+    // --- Step 6: Create or load session ---
     let storage = SessionStorage::with_dir("./sessions");
     let session = if resume {
         // Resume existing session
@@ -114,7 +145,7 @@ async fn main() -> Result<()> {
         session
     };
 
-    // --- Step 6: Configure the agent ---
+    // --- Step 7: Configure the agent ---
     // Clone todo_manager for the injection closure
     let todo_for_injection = todo_manager.clone();
 
@@ -125,6 +156,7 @@ async fn main() -> Result<()> {
 
     let mut config = AgentConfig::new(SYSTEM_PROMPT)
         .with_tools(tools)
+        .with_hooks(hooks) // Add hooks for safety and auto-approval
         .with_debug(true) // Enable debug logging
         .with_streaming(streaming); // Enable streaming if --stream flag is passed
 
@@ -145,15 +177,15 @@ async fn main() -> Result<()> {
         });
 
     println!(
-        "[Setup] AgentConfig created with debug logging{}{} and todo reminder injection",
+        "[Setup] AgentConfig created with debug logging, hooks{}{} and todo reminder injection",
         if streaming { ", streaming enabled" } else { "" },
         if thinking { ", extended thinking enabled" } else { "" }
     );
 
-    // --- Step 7: Create StandardAgent ---
+    // --- Step 8: Create StandardAgent ---
     let agent = StandardAgent::new(config, llm);
 
-    // --- Step 8: Spawn the agent ---
+    // --- Step 9: Spawn the agent ---
     println!("[Setup] Spawning agent...");
     let todo_for_context = todo_manager.clone();
     let handle = runtime
@@ -166,10 +198,10 @@ async fn main() -> Result<()> {
         .await;
     println!("[Setup] Agent spawned!");
 
-    // --- Step 9: Create and run the console renderer ---
+    // --- Step 10: Create and run the console renderer ---
     println!("[Setup] Starting console renderer...");
     println!();
-    println!("Type your requests below. Read is pre-allowed, others will ask for permission.");
+    println!("Type your requests below. Read/Glob/Grep are auto-approved by hooks.");
     println!("Type 'exit' or 'quit' to stop.\n");
 
     let renderer = ConsoleRenderer::new(handle)
