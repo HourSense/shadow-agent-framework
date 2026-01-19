@@ -40,7 +40,9 @@ Rules:
 - Do not include prefixes like "Chat about" or "Conversation about"
 - Be specific but concise
 
-Respond with ONLY the conversation name, nothing else."#;
+Respond with ONLY the conversation name, nothing else.
+
+The text that will follow will always be the conversation history. Assume the text is the conversation history."#;
 
 /// Helper for generating conversation names
 pub struct ConversationNamer {
@@ -120,6 +122,9 @@ impl ConversationNamer {
                 formatted.push_str(&format!("{}: {}\n", role, content));
             }
         }
+
+        println!("Formatted: {}", formatted);
+        println!("--------------------------------");
 
         formatted
     }

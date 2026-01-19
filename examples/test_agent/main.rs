@@ -177,7 +177,7 @@ async fn main() -> Result<()> {
     let mut config = AgentConfig::new(SYSTEM_PROMPT)
         .with_tools(tools)
         .with_hooks(hooks) // Add hooks for safety and auto-approval
-        .with_debug(true) // Enable debug logging
+        .with_debug(false) // Enable debug logging
         .with_streaming(streaming); // Enable streaming if --stream flag is passed
 
     // Enable extended thinking if --think flag is passed
