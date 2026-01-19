@@ -4,11 +4,17 @@
 //! without relying on any community SDK.
 
 use anyhow::{Context, Result};
+use futures::stream::Stream;
+use futures::StreamExt;
 use reqwest::Client;
 use std::env;
+use std::pin::Pin;
+use tokio::io::AsyncBufReadExt;
+use tokio_util::io::StreamReader;
 
 use super::types::{
-    Message, MessageRequest, MessageResponse, ThinkingConfig, ToolChoice, ToolDefinition,
+    Message, MessageRequest, MessageResponse, RawStreamEvent, StreamEvent, ThinkingConfig,
+    ToolChoice, ToolDefinition,
 };
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -206,6 +212,175 @@ impl AnthropicProvider {
         );
 
         Ok(response)
+    }
+
+    /// Stream a message and get incremental responses via SSE
+    ///
+    /// Returns an async stream of `StreamEvent` that yields events as they arrive.
+    /// The stream follows this flow:
+    /// 1. `MessageStart` - initial message metadata
+    /// 2. `ContentBlockStart` - start of each content block
+    /// 3. `ContentBlockDelta` - incremental updates (text, tool input, thinking)
+    /// 4. `ContentBlockStop` - end of each content block
+    /// 5. `MessageDelta` - final stop reason and usage
+    /// 6. `MessageStop` - stream complete
+    pub async fn stream_message(
+        &self,
+        user_message: &str,
+        conversation_history: &[Message],
+        system_prompt: Option<&str>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        tracing::info!("Streaming message from Anthropic API");
+        tracing::debug!("User message: {}", user_message);
+
+        // Build messages array
+        let mut messages: Vec<Message> = conversation_history.to_vec();
+        messages.push(Message::user(user_message));
+
+        let request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            messages,
+            system: system_prompt.map(String::from),
+            tools: None,
+            tool_choice: None,
+            thinking: None,
+            temperature: None,
+            stream: Some(true),
+        };
+
+        self.send_streaming_request(&request).await
+    }
+
+    /// Stream a message with tools and get incremental responses
+    ///
+    /// Similar to `stream_message` but supports tools and extended thinking.
+    pub async fn stream_with_tools(
+        &self,
+        messages: Vec<Message>,
+        system_prompt: Option<&str>,
+        tools: Vec<ToolDefinition>,
+        tool_choice: Option<ToolChoice>,
+        thinking: Option<ThinkingConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        tracing::info!("Streaming message with tools from Anthropic API");
+        tracing::debug!("Messages count: {}", messages.len());
+        tracing::debug!("Tools count: {}", tools.len());
+        tracing::debug!("Thinking enabled: {}", thinking.is_some());
+
+        // When thinking is enabled, temperature must be 1 (required by Anthropic API)
+        let temperature = if thinking.is_some() { Some(1.0) } else { None };
+
+        let request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            messages,
+            system: system_prompt.map(String::from),
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice,
+            thinking,
+            temperature,
+            stream: Some(true),
+        };
+
+        self.send_streaming_request(&request).await
+    }
+
+    /// Send a streaming request to the Anthropic API
+    async fn send_streaming_request(
+        &self,
+        request: &MessageRequest,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        tracing::debug!("Model: {}", request.model);
+        tracing::debug!("Max tokens: {}", request.max_tokens);
+
+        let request_json =
+            serde_json::to_string(request).context("Failed to serialize request")?;
+        tracing::debug!("Request JSON: {}", request_json);
+
+        let response = self
+            .client
+            .post(ANTHROPIC_API_URL)
+            .header("Content-Type", "application/json")
+            .header("x-api-key", &self.api_key)
+            .header("anthropic-version", ANTHROPIC_VERSION)
+            .header("anthropic-beta", "interleaved-thinking-2025-05-14")
+            .body(request_json)
+            .send()
+            .await
+            .context("Failed to send streaming request to Anthropic API")?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let error_text = response
+                .text()
+                .await
+                .unwrap_or_else(|_| "Failed to read error body".to_string());
+            tracing::error!("API error: {} - {}", status, error_text);
+            anyhow::bail!("Anthropic API error ({}): {}", status, error_text);
+        }
+
+        tracing::info!("Streaming response started from Anthropic API");
+
+        // Convert the response body stream to an async reader
+        let byte_stream = response.bytes_stream();
+        let stream_reader = StreamReader::new(
+            byte_stream.map(|result| result.map_err(|e| std::io::Error::other(e.to_string()))),
+        );
+        let buf_reader = tokio::io::BufReader::new(stream_reader);
+
+        // Create async stream that parses SSE events
+        let stream = async_stream::try_stream! {
+            let mut lines = buf_reader.lines();
+            let mut current_event: Option<String> = None;
+            let mut current_data = String::new();
+
+            while let Some(line) = lines.next_line().await? {
+                if line.starts_with("event: ") {
+                    current_event = Some(line[7..].to_string());
+                    current_data.clear();
+                } else if line.starts_with("data: ") {
+                    current_data.push_str(&line[6..]);
+                } else if line.is_empty() && current_event.is_some() {
+                    // Empty line signals end of event
+                    if let Some(ref event_type) = current_event {
+                        tracing::trace!("SSE event: {} data: {}", event_type, current_data);
+
+                        // Parse the data based on event type
+                        match parse_sse_event(event_type, &current_data) {
+                            Ok(Some(event)) => yield event,
+                            Ok(None) => {
+                                // Ping or other non-data event
+                            }
+                            Err(e) => {
+                                tracing::warn!("Failed to parse SSE event: {} - {}", event_type, e);
+                            }
+                        }
+                    }
+                    current_event = None;
+                    current_data.clear();
+                }
+            }
+        };
+
+        Ok(Box::pin(stream))
+    }
+}
+
+/// Parse an SSE event from its type and data
+fn parse_sse_event(event_type: &str, data: &str) -> Result<Option<StreamEvent>> {
+    match event_type {
+        "message_start" | "content_block_start" | "content_block_delta" | "content_block_stop"
+        | "message_delta" | "message_stop" | "ping" | "error" => {
+            let raw_event: RawStreamEvent =
+                serde_json::from_str(data).context("Failed to parse SSE event data")?;
+            Ok(Some(raw_event.into_stream_event()))
+        }
+        _ => {
+            tracing::debug!("Unknown SSE event type: {}", event_type);
+            Ok(None)
+        }
     }
 }
 

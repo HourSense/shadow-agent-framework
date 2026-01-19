@@ -3,6 +3,9 @@ pub mod types;
 
 pub use anthropic::{define_tool, AnthropicProvider};
 pub use types::{
-    ContentBlock, Message, MessageContent, MessageRequest, MessageResponse,
-    StopReason, ThinkingConfig, ToolChoice, ToolDefinition, ToolInputSchema, Usage,
+    ContentBlock, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
+    ContentBlockStopEvent, ContentDelta, DeltaUsage, Message, MessageContent,
+    MessageDeltaData, MessageDeltaEvent, MessageRequest, MessageResponse, MessageStartData,
+    MessageStartEvent, RawStreamEvent, StopReason, StreamError, StreamErrorDetails, StreamEvent,
+    ThinkingConfig, ToolChoice, ToolDefinition, ToolInputSchema, Usage,
 };

@@ -568,6 +568,216 @@ pub struct ApiErrorDetails {
     pub message: String,
 }
 
+// ============================================================================
+// Streaming Types
+// ============================================================================
+
+/// Server-sent event from the streaming API
+#[derive(Debug, Clone)]
+pub enum StreamEvent {
+    /// Initial message with metadata
+    MessageStart(MessageStartEvent),
+    /// Start of a content block
+    ContentBlockStart(ContentBlockStartEvent),
+    /// Delta update to a content block
+    ContentBlockDelta(ContentBlockDeltaEvent),
+    /// End of a content block
+    ContentBlockStop(ContentBlockStopEvent),
+    /// Final message delta with stop reason and usage
+    MessageDelta(MessageDeltaEvent),
+    /// Stream complete
+    MessageStop,
+    /// Keep-alive ping
+    Ping,
+    /// Error event
+    Error(StreamError),
+}
+
+/// Event data for message_start
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageStartEvent {
+    /// The message object (with empty content)
+    pub message: MessageStartData,
+}
+
+/// Message data in message_start event
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageStartData {
+    /// Unique message ID
+    pub id: String,
+    /// Type (always "message")
+    #[serde(rename = "type")]
+    pub message_type: String,
+    /// Role (always "assistant")
+    pub role: String,
+    /// Content (empty array at start)
+    pub content: Vec<ContentBlock>,
+    /// Model used
+    pub model: String,
+    /// Stop reason (null at start)
+    pub stop_reason: Option<StopReason>,
+    /// Stop sequence (null at start)
+    pub stop_sequence: Option<String>,
+    /// Initial usage
+    pub usage: Usage,
+}
+
+/// Event data for content_block_start
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContentBlockStartEvent {
+    /// Index of this content block
+    pub index: usize,
+    /// The content block (type only, content is empty)
+    pub content_block: ContentBlockStart,
+}
+
+/// Content block start data
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentBlockStart {
+    /// Text block start
+    #[serde(rename = "text")]
+    Text { text: String },
+    /// Tool use block start
+    #[serde(rename = "tool_use")]
+    ToolUse { id: String, name: String, input: Value },
+    /// Thinking block start
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
+}
+
+/// Event data for content_block_delta
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContentBlockDeltaEvent {
+    /// Index of the content block being updated
+    pub index: usize,
+    /// The delta update
+    pub delta: ContentDelta,
+}
+
+/// Delta types for content block updates
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
+pub enum ContentDelta {
+    /// Text delta
+    #[serde(rename = "text_delta")]
+    TextDelta { text: String },
+    /// JSON delta for tool input
+    #[serde(rename = "input_json_delta")]
+    InputJsonDelta { partial_json: String },
+    /// Thinking delta
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { thinking: String },
+    /// Signature delta (at end of thinking block)
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
+}
+
+/// Event data for content_block_stop
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContentBlockStopEvent {
+    /// Index of the content block that stopped
+    pub index: usize,
+}
+
+/// Event data for message_delta
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageDeltaEvent {
+    /// Delta changes to the message
+    pub delta: MessageDeltaData,
+    /// Cumulative usage
+    pub usage: DeltaUsage,
+}
+
+/// Delta data in message_delta event
+#[derive(Debug, Clone, Deserialize)]
+pub struct MessageDeltaData {
+    /// Stop reason
+    pub stop_reason: Option<StopReason>,
+    /// Stop sequence
+    pub stop_sequence: Option<String>,
+}
+
+/// Usage in delta events (may only have output_tokens)
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeltaUsage {
+    /// Output tokens (cumulative)
+    pub output_tokens: u32,
+}
+
+/// Error in stream
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamError {
+    /// Error type
+    #[serde(rename = "type")]
+    pub error_type: String,
+    /// Error details
+    pub error: StreamErrorDetails,
+}
+
+/// Stream error details
+#[derive(Debug, Clone, Deserialize)]
+pub struct StreamErrorDetails {
+    /// Error type
+    #[serde(rename = "type")]
+    pub error_type: String,
+    /// Error message
+    pub message: String,
+}
+
+/// Raw SSE event data structure for deserialization
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type")]
+pub enum RawStreamEvent {
+    #[serde(rename = "message_start")]
+    MessageStart { message: MessageStartData },
+    #[serde(rename = "content_block_start")]
+    ContentBlockStart { index: usize, content_block: ContentBlockStart },
+    #[serde(rename = "content_block_delta")]
+    ContentBlockDelta { index: usize, delta: ContentDelta },
+    #[serde(rename = "content_block_stop")]
+    ContentBlockStop { index: usize },
+    #[serde(rename = "message_delta")]
+    MessageDelta { delta: MessageDeltaData, usage: DeltaUsage },
+    #[serde(rename = "message_stop")]
+    MessageStop,
+    #[serde(rename = "ping")]
+    Ping,
+    #[serde(rename = "error")]
+    Error { error: StreamErrorDetails },
+}
+
+impl RawStreamEvent {
+    /// Convert to StreamEvent
+    pub fn into_stream_event(self) -> StreamEvent {
+        match self {
+            RawStreamEvent::MessageStart { message } => {
+                StreamEvent::MessageStart(MessageStartEvent { message })
+            }
+            RawStreamEvent::ContentBlockStart { index, content_block } => {
+                StreamEvent::ContentBlockStart(ContentBlockStartEvent { index, content_block })
+            }
+            RawStreamEvent::ContentBlockDelta { index, delta } => {
+                StreamEvent::ContentBlockDelta(ContentBlockDeltaEvent { index, delta })
+            }
+            RawStreamEvent::ContentBlockStop { index } => {
+                StreamEvent::ContentBlockStop(ContentBlockStopEvent { index })
+            }
+            RawStreamEvent::MessageDelta { delta, usage } => {
+                StreamEvent::MessageDelta(MessageDeltaEvent { delta, usage })
+            }
+            RawStreamEvent::MessageStop => StreamEvent::MessageStop,
+            RawStreamEvent::Ping => StreamEvent::Ping,
+            RawStreamEvent::Error { error } => {
+                StreamEvent::Error(StreamError {
+                    error_type: "error".to_string(),
+                    error,
+                })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -594,5 +804,28 @@ mod tests {
         let json = serde_json::to_string(&block).unwrap();
         assert!(json.contains("\"type\":\"tool_result\""));
         assert!(json.contains("\"tool_use_id\":\"toolu_123\""));
+    }
+
+    #[test]
+    fn test_stream_event_deserialization() {
+        let json = r#"{"type": "ping"}"#;
+        let event: RawStreamEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, RawStreamEvent::Ping));
+    }
+
+    #[test]
+    fn test_text_delta_deserialization() {
+        let json = r#"{"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hello"}}"#;
+        let event: RawStreamEvent = serde_json::from_str(json).unwrap();
+        match event {
+            RawStreamEvent::ContentBlockDelta { index, delta } => {
+                assert_eq!(index, 0);
+                match delta {
+                    ContentDelta::TextDelta { text } => assert_eq!(text, "Hello"),
+                    _ => panic!("Expected TextDelta"),
+                }
+            }
+            _ => panic!("Expected ContentBlockDelta"),
+        }
     }
 }

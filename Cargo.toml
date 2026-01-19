@@ -5,10 +5,16 @@ edition = "2021"
 
 [dependencies]
 # HTTP client for Anthropic API
-reqwest = { version = "0.11", features = ["json"] }
+reqwest = { version = "0.11", features = ["json", "stream"] }
 
 # Async runtime
 tokio = { version = "1.0", features = ["full", "process"] }
+
+# Tokio utilities for stream handling
+tokio-util = { version = "0.7", features = ["io"] }
+
+# Async stream creation
+async-stream = "0.3"
 
 # Stream handling
 futures = "0.3"
