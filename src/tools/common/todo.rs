@@ -130,6 +130,7 @@ impl Tool for TodoWriteTool {
                 required: Some(vec!["todos".to_string()]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

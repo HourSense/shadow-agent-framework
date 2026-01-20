@@ -160,6 +160,7 @@ impl Tool for ReadTool {
                 required: Some(vec!["file_path".to_string()]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

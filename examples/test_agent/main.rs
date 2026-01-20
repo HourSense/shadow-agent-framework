@@ -6,16 +6,18 @@
 //! - Context injections for dynamic message modification
 //! - TodoListManager for task tracking
 //! - Streaming responses (optional)
+//! - Prompt caching for cost savings (enabled by default)
 //!
 //! Read operations are pre-allowed, others will prompt the user.
 //!
 //! Run with:
-//!   cargo run --example test_agent                     # New session
+//!   cargo run --example test_agent                     # New session (with caching)
 //!   cargo run --example test_agent -- --resume         # Resume existing session
 //!   cargo run --example test_agent -- --stream         # New session with streaming
 //!   cargo run --example test_agent -- --stream --resume # Resume with streaming
 //!   cargo run --example test_agent -- --think          # Enable extended thinking
 //!   cargo run --example test_agent -- --stream --think # Streaming with thinking
+//!   cargo run --example test_agent -- --no-cache       # Disable prompt caching
 
 mod tools;
 
@@ -63,7 +65,8 @@ async fn main() -> Result<()> {
     println!("This agent uses the standardized agent framework.");
     println!("Read operations are pre-allowed. Others will require permission.");
     println!("Use --stream/-s flag to enable streaming responses.");
-    println!("Use --think/-t flag to enable extended thinking.\n");
+    println!("Use --think/-t flag to enable extended thinking.");
+    println!("Prompt caching is enabled by default (use --no-cache to disable).\n");
 
     // --- Step 1: Create LLM provider with dynamic auth ---
     println!("[Setup] Creating LLM provider with dynamic auth...");
@@ -173,12 +176,16 @@ async fn main() -> Result<()> {
     let streaming = args.iter().any(|a| a == "--stream" || a == "-s");
     // Check if extended thinking is requested via command line
     let thinking = args.iter().any(|a| a == "--think" || a == "-t");
+    // Check if caching should be disabled (enabled by default)
+    let no_cache = args.iter().any(|a| a == "--no-cache");
+    let caching = !no_cache;
 
     let mut config = AgentConfig::new(SYSTEM_PROMPT)
         .with_tools(tools)
         .with_hooks(hooks) // Add hooks for safety and auto-approval
-        .with_debug(false) // Enable debug logging
-        .with_streaming(streaming); // Enable streaming if --stream flag is passed
+        .with_debug(true) // Enable debug logging
+        .with_streaming(streaming) // Enable streaming if --stream flag is passed
+        .with_prompt_caching(caching); // Enable/disable prompt caching
 
     // Enable extended thinking if --think flag is passed
     if thinking {
@@ -197,9 +204,10 @@ async fn main() -> Result<()> {
         });
 
     println!(
-        "[Setup] AgentConfig created with debug logging, hooks{}{} and todo reminder injection",
+        "[Setup] AgentConfig created with debug logging, hooks{}{}{} and todo reminder injection",
         if streaming { ", streaming enabled" } else { "" },
-        if thinking { ", extended thinking enabled" } else { "" }
+        if thinking { ", extended thinking enabled" } else { "" },
+        if caching { ", prompt caching enabled" } else { ", prompt caching disabled" }
     );
 
     // --- Step 8: Create StandardAgent ---
@@ -222,6 +230,12 @@ async fn main() -> Result<()> {
     println!("[Setup] Starting console renderer...");
     println!();
     println!("Type your requests below. Read/Glob/Grep are auto-approved by hooks.");
+    if caching {
+        println!("💰 Prompt caching enabled: 90% cost savings on repeated content!");
+        println!("   (Tools, system prompt, and conversation history are automatically cached)");
+    } else {
+        println!("⚠️  Prompt caching disabled. To enable: run without --no-cache flag");
+    }
     println!("Type 'exit' or 'quit' to stop.\n");
 
     let renderer = ConsoleRenderer::new(handle)

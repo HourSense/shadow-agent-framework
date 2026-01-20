@@ -124,6 +124,7 @@ impl Tool for WriteTool {
                 required: Some(vec!["file_path".to_string(), "content".to_string()]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

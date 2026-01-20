@@ -55,6 +55,14 @@ pub struct AgentConfig {
     /// Whether to automatically generate a conversation name after the first turn
     /// Uses Haiku to create a short, descriptive name based on conversation content.
     pub auto_name_conversation: bool,
+
+    /// Whether to enable prompt caching
+    /// When enabled, the agent will automatically add cache_control breakpoints to:
+    /// - The last tool definition (caches all tools)
+    /// - The system prompt (caches static instructions)
+    /// - The last message block before each LLM call (caches conversation history)
+    /// This significantly reduces costs and latency for multi-turn conversations.
+    pub enable_prompt_caching: bool,
 }
 
 impl AgentConfig {
@@ -71,6 +79,7 @@ impl AgentConfig {
             thinking: None,
             hooks: None,
             auto_name_conversation: true,
+            enable_prompt_caching: true,
         }
     }
 
@@ -200,6 +209,22 @@ impl AgentConfig {
         self
     }
 
+    /// Enable or disable prompt caching
+    ///
+    /// When enabled (default), the agent automatically adds cache_control breakpoints to:
+    /// - The last tool definition (caches all tools)
+    /// - The system prompt (caches static instructions)
+    /// - The last message block (caches conversation history)
+    ///
+    /// This provides significant cost savings (90% discount on cached tokens) and
+    /// improved latency for multi-turn conversations.
+    ///
+    /// See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
+    pub fn with_prompt_caching(mut self, enabled: bool) -> Self {
+        self.enable_prompt_caching = enabled;
+        self
+    }
+
     /// Get tool definitions (empty vec if no tools)
     pub fn tool_definitions(&self) -> Vec<crate::llm::ToolDefinition> {
         self.tools
@@ -227,6 +252,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("thinking", &self.thinking)
             .field("hooks", &self.hooks.as_ref().map(|h| format!("{:?}", h)))
             .field("auto_name_conversation", &self.auto_name_conversation)
+            .field("enable_prompt_caching", &self.enable_prompt_caching)
             .finish()
     }
 }

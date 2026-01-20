@@ -22,7 +22,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::llm::Message;
+use crate::llm::{Message, SystemPrompt};
 use crate::tools::ToolResult;
 
 /// Debugger for logging API calls and tool executions
@@ -51,6 +51,16 @@ pub struct ApiRequestEvent {
     pub event_type: EventType,
     pub sequence: u64,
     pub system_prompt: Option<String>,
+    pub messages: Vec<Message>,
+    pub tool_definitions: Option<Vec<Value>>,
+}
+
+/// API request event with full system prompt (for cache_control visibility)
+#[derive(Debug, Serialize)]
+pub struct ApiRequestEventFull {
+    pub event_type: EventType,
+    pub sequence: u64,
+    pub system: Option<SystemPrompt>,
     pub messages: Vec<Message>,
     pub tool_definitions: Option<Vec<Value>>,
 }
@@ -153,6 +163,36 @@ impl Debugger {
         serde_json::to_writer_pretty(writer, &event)?;
 
         tracing::debug!("[Debugger] Logged API request #{}", seq);
+        Ok(())
+    }
+
+    /// Log an API request with full system prompt (includes cache_control)
+    pub fn log_api_request_full(
+        &self,
+        messages: &[Message],
+        system: Option<SystemPrompt>,
+        tool_definitions: Option<&[Value]>,
+    ) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let seq = self.next_sequence();
+        let event = ApiRequestEventFull {
+            event_type: EventType::ApiRequest,
+            sequence: seq,
+            system,
+            messages: messages.to_vec(),
+            tool_definitions: tool_definitions.map(|t| t.to_vec()),
+        };
+
+        let filename = format!("{:06}_api_request.json", seq);
+        let path = self.dir.join(&filename);
+        let file = File::create(&path)?;
+        let writer = BufWriter::new(file);
+        serde_json::to_writer_pretty(writer, &event)?;
+
+        tracing::debug!("[Debugger] Logged API request #{} (with cache_control)", seq);
         Ok(())
     }
 

@@ -158,6 +158,7 @@ impl Tool for BashTool {
                 required: Some(vec!["command".to_string()]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

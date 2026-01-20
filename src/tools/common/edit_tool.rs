@@ -172,6 +172,7 @@ impl Tool for EditTool {
                 ]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

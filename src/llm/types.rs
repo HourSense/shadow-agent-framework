@@ -6,8 +6,90 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 // ============================================================================
+// Cache Control
+// ============================================================================
+
+/// Cache control configuration for prompt caching
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheControl {
+    /// Cache type (always "ephemeral")
+    #[serde(rename = "type")]
+    pub cache_type: String,
+
+    /// Time to live ("5m" or "1h")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
+}
+
+impl CacheControl {
+    /// Create ephemeral cache control with 5-minute TTL
+    pub fn ephemeral_5m() -> Self {
+        Self {
+            cache_type: "ephemeral".to_string(),
+            ttl: Some("5m".to_string()),
+        }
+    }
+
+    /// Create ephemeral cache control with 1-hour TTL
+    pub fn ephemeral_1h() -> Self {
+        Self {
+            cache_type: "ephemeral".to_string(),
+            ttl: Some("1h".to_string()),
+        }
+    }
+
+    /// Create ephemeral cache control with default TTL (5 minutes)
+    pub fn ephemeral() -> Self {
+        Self {
+            cache_type: "ephemeral".to_string(),
+            ttl: None,
+        }
+    }
+}
+
+// ============================================================================
 // Request Types
 // ============================================================================
+
+/// System prompt - either a simple string or array of text blocks (for caching)
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum SystemPrompt {
+    /// Simple text system prompt
+    Text(String),
+    /// Array of text blocks (for prompt caching)
+    Blocks(Vec<SystemBlock>),
+}
+
+/// System block with cache control
+#[derive(Debug, Clone, Serialize)]
+pub struct SystemBlock {
+    /// Type (always "text")
+    #[serde(rename = "type")]
+    pub block_type: String,
+    /// Text content
+    pub text: String,
+    /// Cache control (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
+}
+
+impl SystemBlock {
+    /// Create a new system block
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            block_type: "text".to_string(),
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    /// Add cache control to this block
+    pub fn with_cache_control(mut self, cache_control: CacheControl) -> Self {
+        self.cache_control = Some(cache_control);
+        self
+    }
+}
 
 /// Request body for the Anthropic Messages API
 #[derive(Debug, Clone, Serialize)]
@@ -21,9 +103,9 @@ pub struct MessageRequest {
     /// Input messages
     pub messages: Vec<Message>,
 
-    /// System prompt (optional)
+    /// System prompt (optional) - can be string or array of blocks
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<String>,
+    pub system: Option<SystemPrompt>,
 
     /// Tools available to the model (optional)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -148,6 +230,7 @@ impl Message {
             MessageContent::Blocks(blocks) => {
                 blocks.push(ContentBlock::Text {
                     text: text.to_string(),
+                    cache_control: None,
                 });
             }
         }
@@ -167,6 +250,7 @@ impl Message {
                     0,
                     ContentBlock::Text {
                         text: text.to_string(),
+                        cache_control: None,
                     },
                 );
             }
@@ -186,6 +270,8 @@ pub enum ContentBlock {
     #[serde(rename = "text")]
     Text {
         text: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 
     /// Tool use request from the model
@@ -204,6 +290,8 @@ pub enum ContentBlock {
         content: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
     },
 
     /// Thinking block (for extended thinking)
@@ -223,7 +311,18 @@ pub enum ContentBlock {
 impl ContentBlock {
     /// Create a text content block
     pub fn text(text: impl Into<String>) -> Self {
-        ContentBlock::Text { text: text.into() }
+        ContentBlock::Text {
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    /// Create a text content block with cache control
+    pub fn text_with_cache(text: impl Into<String>, cache_control: CacheControl) -> Self {
+        ContentBlock::Text {
+            text: text.into(),
+            cache_control: Some(cache_control),
+        }
     }
 
     /// Create a tool use content block
@@ -241,13 +340,45 @@ impl ContentBlock {
             tool_use_id: tool_use_id.into(),
             content: Some(content.into()),
             is_error: if is_error { Some(true) } else { None },
+            cache_control: None,
         }
+    }
+
+    /// Create a tool result content block with cache control
+    pub fn tool_result_with_cache(
+        tool_use_id: impl Into<String>,
+        content: impl Into<String>,
+        is_error: bool,
+        cache_control: CacheControl,
+    ) -> Self {
+        ContentBlock::ToolResult {
+            tool_use_id: tool_use_id.into(),
+            content: Some(content.into()),
+            is_error: if is_error { Some(true) } else { None },
+            cache_control: Some(cache_control),
+        }
+    }
+
+    /// Add cache control to this content block (if applicable)
+    pub fn with_cache_control(mut self, cache_control: CacheControl) -> Self {
+        match &mut self {
+            ContentBlock::Text { cache_control: cc, .. } => {
+                *cc = Some(cache_control);
+            }
+            ContentBlock::ToolResult { cache_control: cc, .. } => {
+                *cc = Some(cache_control);
+            }
+            _ => {
+                // Other block types don't support cache control
+            }
+        }
+        self
     }
 
     /// Get the text content if this is a text block
     pub fn as_text(&self) -> Option<&str> {
         match self {
-            ContentBlock::Text { text } => Some(text.as_str()),
+            ContentBlock::Text { text, .. } => Some(text.as_str()),
             _ => None,
         }
     }
@@ -277,6 +408,24 @@ pub enum ToolDefinition {
     TextEditor(TextEditorTool),
 }
 
+impl ToolDefinition {
+    /// Add cache control to this tool definition
+    pub fn with_cache_control(mut self, cache_control: CacheControl) -> Self {
+        match &mut self {
+            ToolDefinition::Custom(tool) => {
+                tool.cache_control = Some(cache_control);
+            }
+            ToolDefinition::Bash(tool) => {
+                tool.cache_control = Some(cache_control);
+            }
+            ToolDefinition::TextEditor(tool) => {
+                tool.cache_control = Some(cache_control);
+            }
+        }
+        self
+    }
+}
+
 /// Custom tool definition
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CustomTool {
@@ -293,6 +442,10 @@ pub struct CustomTool {
     /// Optional type field (always "custom" for custom tools)
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub tool_type: Option<String>,
+
+    /// Cache control (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 /// JSON schema for tool input
@@ -349,6 +502,10 @@ pub struct BashTool {
     /// Tool type (always "bash_20250124")
     #[serde(rename = "type")]
     pub tool_type: String,
+
+    /// Cache control (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 impl Default for BashTool {
@@ -356,6 +513,7 @@ impl Default for BashTool {
         Self {
             name: "bash".to_string(),
             tool_type: "bash_20250124".to_string(),
+            cache_control: None,
         }
     }
 }
@@ -369,6 +527,10 @@ pub struct TextEditorTool {
     /// Tool type
     #[serde(rename = "type")]
     pub tool_type: String,
+
+    /// Cache control (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<CacheControl>,
 }
 
 impl Default for TextEditorTool {
@@ -376,6 +538,7 @@ impl Default for TextEditorTool {
         Self {
             name: "str_replace_editor".to_string(),
             tool_type: "text_editor_20250124".to_string(),
+            cache_control: None,
         }
     }
 }

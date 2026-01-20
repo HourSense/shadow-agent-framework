@@ -3,7 +3,7 @@
 //! Registers Read, Write, Bash, and TodoWrite tools.
 
 use anyhow::Result;
-use shadow_agent_sdk::tools::{BashTool, ReadTool, TodoWriteTool, ToolRegistry, WriteTool};
+use shadow_agent_sdk::tools::{BashTool, ReadTool, TodoWriteTool, ToolRegistry, WriteTool, GrepTool, GlobTool, EditTool};
 
 /// Create a tool registry with Read, Write, Bash, and TodoWrite tools
 pub fn create_registry() -> Result<ToolRegistry> {
@@ -13,7 +13,10 @@ pub fn create_registry() -> Result<ToolRegistry> {
     registry.register(ReadTool::new()?);
     registry.register(WriteTool::new()?);
     registry.register(BashTool::new()?);
-    registry.register(TodoWriteTool::new());
+    // registry.register(TodoWriteTool::new());
+    // registry.register(GrepTool::new()?);
+    // registry.register(GlobTool::new()?);
+    // registry.register(EditTool::new()?);
 
     Ok(registry)
 }

@@ -18,8 +18,8 @@ use crate::core::{FrameworkResult, InputMessage};
 use crate::helpers::{ConversationNamer, Debugger};
 use crate::hooks::HookContext;
 use crate::llm::{
-    AnthropicProvider, ContentBlock, ContentBlockStart, ContentDelta, Message, StopReason,
-    StreamEvent,
+    AnthropicProvider, CacheControl, ContentBlock, ContentBlockStart, ContentDelta, Message,
+    StopReason, StreamEvent, SystemBlock, SystemPrompt,
 };
 use crate::runtime::AgentInternals;
 use crate::tools::ToolResult;
@@ -205,39 +205,82 @@ impl StandardAgent {
                 break;
             }
 
-            // Get messages and apply context injections
-            let mut messages = internals.session.history().to_vec();
-            messages = self.config.injections.apply(internals, messages);
+            // Get messages from history
+            let messages = internals.session.history().to_vec();
+
+            // IMPORTANT: Apply cache control BEFORE injections
+            // This ensures we cache the stable message content (without dynamic injections)
+            // The injections will be added AFTER the cache breakpoint, so they're sent but not cached
+            // This allows the cache to match across turns even though injections are dynamic
+            let (tools_with_cache, system_with_cache, mut messages_with_cache) =
+                self.apply_cache_control(tool_definitions.to_vec(), messages);
+
+            // Apply context injections AFTER cache control
+            messages_with_cache = self.config.injections.apply(internals, messages_with_cache);
 
             tracing::info!(
                 "[StandardAgent] Calling LLM with {} messages (iteration {})",
-                messages.len(),
+                messages_with_cache.len(),
                 iterations
             );
 
-            // Log API request if debugger is enabled
+            // Log API request if debugger is enabled (with cache_control included)
             if let Some(debugger) = internals.context.get_resource::<Debugger>() {
-                let tool_defs: Vec<serde_json::Value> = tool_definitions
+                let tool_defs: Vec<serde_json::Value> = tools_with_cache
                     .iter()
                     .map(|t| serde_json::to_value(t).unwrap_or_default())
                     .collect();
 
-                if let Err(e) = debugger.log_api_request(
-                    &messages,
-                    Some(&self.config.system_prompt),
-                    Some(&tool_defs),
-                ) {
-                    tracing::warn!("[StandardAgent] Failed to log API request: {}", e);
+                // Convert SystemPrompt to string for logging (or serialize as-is)
+                let system_str = match &system_with_cache {
+                    Some(SystemPrompt::Text(s)) => Some(s.as_str()),
+                    Some(SystemPrompt::Blocks(_)) => {
+                        // For blocks, we'll serialize them so cache_control is visible
+                        None // Will serialize full structure below
+                    }
+                    None => None,
+                };
+
+                // If we have system blocks, we need to log them differently
+                if let Some(SystemPrompt::Blocks(_)) = &system_with_cache {
+                    // Log the full request with SystemPrompt blocks
+                    if let Err(e) = debugger.log_api_request_full(
+                        &messages_with_cache,
+                        system_with_cache.clone(),
+                        Some(&tool_defs),
+                    ) {
+                        tracing::warn!("[StandardAgent] Failed to log API request: {}", e);
+                    }
+                } else {
+                    // Legacy path for simple string system prompt
+                    if let Err(e) = debugger.log_api_request(
+                        &messages_with_cache,
+                        system_str,
+                        Some(&tool_defs),
+                    ) {
+                        tracing::warn!("[StandardAgent] Failed to log API request: {}", e);
+                    }
                 }
             }
 
             // Choose streaming or non-streaming based on config
+            // Pass the already-cache-controlled data
             let (content_blocks, stop_reason) = if self.config.streaming_enabled {
-                self.call_llm_streaming(internals, messages, &tool_definitions)
-                    .await?
+                self.call_llm_streaming_with_cache(
+                    internals,
+                    messages_with_cache,
+                    tools_with_cache,
+                    system_with_cache,
+                )
+                .await?
             } else {
-                self.call_llm_non_streaming(internals, messages, &tool_definitions)
-                    .await?
+                self.call_llm_non_streaming_with_cache(
+                    internals,
+                    messages_with_cache,
+                    tools_with_cache,
+                    system_with_cache,
+                )
+                .await?
             };
 
             tracing::info!(
@@ -275,7 +318,8 @@ impl StandardAgent {
 
             // If there were tool calls, add results and continue loop
             if !tool_results.is_empty() {
-                // Add tool results as a message
+                // Add tool results as a message (WITHOUT cache_control)
+                // Cache control will be applied dynamically in apply_cache_control()
                 let tool_result_blocks: Vec<ContentBlock> = tool_results
                     .into_iter()
                     .map(|(id, result)| {
@@ -319,19 +363,90 @@ impl StandardAgent {
         Ok(())
     }
 
-    /// Call LLM without streaming (original behavior)
-    async fn call_llm_non_streaming(
+    /// Apply cache control to tools, system prompt, and messages (if enabled)
+    fn apply_cache_control(
+        &self,
+        mut tool_definitions: Vec<crate::llm::ToolDefinition>,
+        mut messages: Vec<Message>,
+    ) -> (Vec<crate::llm::ToolDefinition>, Option<SystemPrompt>, Vec<Message>) {
+        if !self.config.enable_prompt_caching {
+            // Caching disabled - return system prompt as simple text
+            return (
+                tool_definitions,
+                Some(SystemPrompt::Text(self.config.system_prompt.clone())),
+                messages,
+            );
+        }
+
+        // IMPORTANT: Strip ALL existing cache_control from messages first
+        // This ensures we don't accidentally create duplicate cache breakpoints
+        for message in &mut messages {
+            if let crate::llm::MessageContent::Blocks(blocks) = &mut message.content {
+                for block in blocks {
+                    match block {
+                        ContentBlock::Text { cache_control, .. } => {
+                            *cache_control = None;
+                        }
+                        ContentBlock::ToolResult { cache_control, .. } => {
+                            *cache_control = None;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        // 1. Add cache control to last tool definition (caches all tools)
+        if let Some(last_tool) = tool_definitions.last_mut() {
+            *last_tool = last_tool.clone().with_cache_control(CacheControl::ephemeral());
+        }
+
+        // 2. Create system prompt with cache control
+        let system_prompt = Some(SystemPrompt::Blocks(vec![SystemBlock::new(
+            self.config.system_prompt.clone(),
+        )
+        .with_cache_control(CacheControl::ephemeral())]));
+
+        // 3. Add cache control to the last content block of the LAST message
+        // This caches everything including the current user input, creating a stable growing cache
+        // Next request will have this content cached, allowing prefix matching
+        if let Some(last_message) = messages.last_mut() {
+            match &mut last_message.content {
+                crate::llm::MessageContent::Text(text) => {
+                    // Convert to blocks format with cache control on the text
+                    last_message.content = crate::llm::MessageContent::Blocks(vec![
+                        ContentBlock::Text {
+                            text: text.clone(),
+                            cache_control: Some(CacheControl::ephemeral()),
+                        },
+                    ]);
+                }
+                crate::llm::MessageContent::Blocks(blocks) => {
+                    // Add cache control to the last block
+                    if let Some(last_block) = blocks.last_mut() {
+                        *last_block = last_block.clone().with_cache_control(CacheControl::ephemeral());
+                    }
+                }
+            }
+        }
+
+        (tool_definitions, system_prompt, messages)
+    }
+
+    /// Call LLM without streaming (with pre-applied cache control)
+    async fn call_llm_non_streaming_with_cache(
         &self,
         internals: &mut AgentInternals,
         messages: Vec<Message>,
-        tool_definitions: &[crate::llm::ToolDefinition],
+        tools: Vec<crate::llm::ToolDefinition>,
+        system: Option<SystemPrompt>,
     ) -> Result<(Vec<ContentBlock>, Option<StopReason>)> {
         let response = self
             .llm
-            .send_with_tools(
+            .send_with_tools_and_system(
                 messages,
-                Some(&self.config.system_prompt),
-                tool_definitions.to_vec(),
+                system,
+                tools,
                 None,
                 self.config.thinking.clone(),
             )
@@ -349,7 +464,7 @@ impl StandardAgent {
         // Send text and thinking content to output
         for block in &response.content {
             match block {
-                ContentBlock::Text { text } => {
+                ContentBlock::Text { text, .. } => {
                     internals.send_text(text);
                     internals.send_text_complete(text);
                 }
@@ -364,19 +479,20 @@ impl StandardAgent {
         Ok((response.content, response.stop_reason))
     }
 
-    /// Call LLM with streaming - sends deltas in real-time
-    async fn call_llm_streaming(
+    /// Call LLM with streaming (with pre-applied cache control) - sends deltas in real-time
+    async fn call_llm_streaming_with_cache(
         &self,
         internals: &mut AgentInternals,
         messages: Vec<Message>,
-        tool_definitions: &[crate::llm::ToolDefinition],
+        tools: Vec<crate::llm::ToolDefinition>,
+        system: Option<SystemPrompt>,
     ) -> Result<(Vec<ContentBlock>, Option<StopReason>)> {
         let mut stream = self
             .llm
-            .stream_with_tools(
+            .stream_with_tools_and_system(
                 messages,
-                Some(&self.config.system_prompt),
-                tool_definitions.to_vec(),
+                system,
+                tools,
                 None,
                 self.config.thinking.clone(),
             )
@@ -386,6 +502,12 @@ impl StandardAgent {
         let mut content_blocks: Vec<ContentBlock> = Vec::new();
         let mut current_block_index: Option<usize> = None;
         let mut stop_reason: Option<StopReason> = None;
+
+        // Track message metadata for logging
+        let mut message_id: Option<String> = None;
+        let mut model: Option<String> = None;
+        let mut initial_usage: Option<crate::llm::Usage> = None;
+        let mut output_tokens: u32 = 0;
 
         // Accumulators for building content blocks
         let mut text_accum = String::new();
@@ -399,8 +521,12 @@ impl StandardAgent {
             match event_result {
                 Ok(event) => {
                     match event {
-                        StreamEvent::MessageStart(_) => {
+                        StreamEvent::MessageStart(msg_start) => {
                             tracing::debug!("[StandardAgent] Stream started");
+                            // Capture message metadata for logging
+                            message_id = Some(msg_start.message.id.clone());
+                            model = Some(msg_start.message.model.clone());
+                            initial_usage = Some(msg_start.message.usage.clone());
                         }
 
                         StreamEvent::ContentBlockStart(block_start) => {
@@ -451,6 +577,7 @@ impl StandardAgent {
                                     internals.send_text_complete(&text_accum);
                                     content_blocks.push(ContentBlock::Text {
                                         text: text_accum.clone(),
+                                        cache_control: None,
                                     });
                                     text_accum.clear();
                                 } else if !thinking_accum.is_empty() {
@@ -483,6 +610,8 @@ impl StandardAgent {
 
                         StreamEvent::MessageDelta(msg_delta) => {
                             stop_reason = msg_delta.delta.stop_reason;
+                            // Capture final output tokens
+                            output_tokens = msg_delta.usage.output_tokens;
                         }
 
                         StreamEvent::MessageStop => {
@@ -510,6 +639,34 @@ impl StandardAgent {
                     tracing::error!("[StandardAgent] Stream error: {}", e);
                     return Err(e);
                 }
+            }
+        }
+
+        // Log the assembled response if debugger is enabled
+        if let Some(debugger) = internals.context.get_resource::<Debugger>() {
+            // Construct a response object similar to MessageResponse for logging
+            let mut response_for_logging = serde_json::json!({
+                "id": message_id.unwrap_or_else(|| "unknown".to_string()),
+                "type": "message",
+                "role": "assistant",
+                "content": content_blocks,
+                "model": model.unwrap_or_else(|| "streamed".to_string()),
+                "stop_reason": stop_reason,
+            });
+
+            // Add usage information if we captured it
+            if let Some(usage) = initial_usage {
+                let usage_obj = serde_json::json!({
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": output_tokens,
+                    "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+                    "cache_read_input_tokens": usage.cache_read_input_tokens,
+                });
+                response_for_logging["usage"] = usage_obj;
+            }
+
+            if let Err(e) = debugger.log_api_response(&response_for_logging) {
+                tracing::warn!("[StandardAgent] Failed to log streaming API response: {}", e);
             }
         }
 

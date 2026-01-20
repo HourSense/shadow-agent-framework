@@ -34,8 +34,8 @@ use tokio_util::io::StreamReader;
 
 use super::auth::{auth_provider, AuthConfig, AuthProvider, AuthSource};
 use super::types::{
-    Message, MessageRequest, MessageResponse, RawStreamEvent, StreamEvent, ThinkingConfig,
-    ToolChoice, ToolDefinition,
+    Message, MessageRequest, MessageResponse, RawStreamEvent, StreamEvent, SystemPrompt,
+    ThinkingConfig, ToolChoice, ToolDefinition,
 };
 
 const DEFAULT_API_URL: &str = "https://api.anthropic.com/v1/messages";
@@ -231,7 +231,7 @@ impl AnthropicProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages,
-            system: system_prompt.map(String::from),
+            system: system_prompt.map(|s| SystemPrompt::Text(s.to_string())),
             tools: None,
             tool_choice: None,
             thinking: None,
@@ -267,7 +267,42 @@ impl AnthropicProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages,
-            system: system_prompt.map(String::from),
+            system: system_prompt.map(|s| SystemPrompt::Text(s.to_string())),
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice,
+            thinking,
+            temperature,
+            stream: None,
+        };
+
+        self.send_request(&request).await
+    }
+
+    /// Send a request with tools and system prompt (with caching support)
+    ///
+    /// This variant accepts `Option<SystemPrompt>` instead of `Option<&str>`,
+    /// allowing for prompt caching via SystemPrompt::Blocks.
+    pub async fn send_with_tools_and_system(
+        &self,
+        messages: Vec<Message>,
+        system: Option<SystemPrompt>,
+        tools: Vec<ToolDefinition>,
+        tool_choice: Option<ToolChoice>,
+        thinking: Option<ThinkingConfig>,
+    ) -> Result<MessageResponse> {
+        tracing::info!("Sending message with tools to Anthropic API");
+        tracing::debug!("Messages count: {}", messages.len());
+        tracing::debug!("Tools count: {}", tools.len());
+        tracing::debug!("Thinking enabled: {}", thinking.is_some());
+
+        // When thinking is enabled, temperature must be 1 (required by Anthropic API)
+        let temperature = if thinking.is_some() { Some(1.0) } else { None };
+
+        let request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            messages,
+            system,
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             thinking,
@@ -331,6 +366,14 @@ impl AnthropicProvider {
             response.usage.output_tokens
         );
 
+        // Log cache metrics if present
+        if let Some(cache_creation_tokens) = response.usage.cache_creation_input_tokens {
+            tracing::debug!("Cache creation tokens: {}", cache_creation_tokens);
+        }
+        if let Some(cache_read_tokens) = response.usage.cache_read_input_tokens {
+            tracing::debug!("Cache read tokens: {}", cache_read_tokens);
+        }
+
         Ok(response)
     }
 
@@ -361,7 +404,7 @@ impl AnthropicProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages,
-            system: system_prompt.map(String::from),
+            system: system_prompt.map(|s| SystemPrompt::Text(s.to_string())),
             tools: None,
             tool_choice: None,
             thinking: None,
@@ -395,7 +438,42 @@ impl AnthropicProvider {
             model: self.model.clone(),
             max_tokens: self.max_tokens,
             messages,
-            system: system_prompt.map(String::from),
+            system: system_prompt.map(|s| SystemPrompt::Text(s.to_string())),
+            tools: if tools.is_empty() { None } else { Some(tools) },
+            tool_choice,
+            thinking,
+            temperature,
+            stream: Some(true),
+        };
+
+        self.send_streaming_request(&request).await
+    }
+
+    /// Stream a message with tools and system prompt (with caching support)
+    ///
+    /// This variant accepts `Option<SystemPrompt>` instead of `Option<&str>`,
+    /// allowing for prompt caching via SystemPrompt::Blocks.
+    pub async fn stream_with_tools_and_system(
+        &self,
+        messages: Vec<Message>,
+        system: Option<SystemPrompt>,
+        tools: Vec<ToolDefinition>,
+        tool_choice: Option<ToolChoice>,
+        thinking: Option<ThinkingConfig>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent>> + Send>>> {
+        tracing::info!("Streaming message with tools from Anthropic API");
+        tracing::debug!("Messages count: {}", messages.len());
+        tracing::debug!("Tools count: {}", tools.len());
+        tracing::debug!("Thinking enabled: {}", thinking.is_some());
+
+        // When thinking is enabled, temperature must be 1 (required by Anthropic API)
+        let temperature = if thinking.is_some() { Some(1.0) } else { None };
+
+        let request = MessageRequest {
+            model: self.model.clone(),
+            max_tokens: self.max_tokens,
+            messages,
+            system,
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice,
             thinking,
@@ -527,5 +605,6 @@ pub fn define_tool(
             required: Some(required),
         },
         tool_type: None,
+        cache_control: None,
     })
 }

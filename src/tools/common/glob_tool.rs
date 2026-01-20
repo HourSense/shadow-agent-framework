@@ -118,6 +118,7 @@ impl Tool for GlobTool {
                 required: Some(vec!["pattern".to_string()]),
             },
             tool_type: None,
+            cache_control: None,
         })
     }
 

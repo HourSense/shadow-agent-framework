@@ -5,9 +5,9 @@ pub mod types;
 pub use anthropic::{define_tool, AnthropicProvider};
 pub use auth::{auth_provider, AuthConfig, AuthProvider};
 pub use types::{
-    ContentBlock, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
+    CacheControl, ContentBlock, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
     ContentBlockStopEvent, ContentDelta, DeltaUsage, Message, MessageContent,
     MessageDeltaData, MessageDeltaEvent, MessageRequest, MessageResponse, MessageStartData,
     MessageStartEvent, RawStreamEvent, StopReason, StreamError, StreamErrorDetails, StreamEvent,
-    ThinkingConfig, ToolChoice, ToolDefinition, ToolInputSchema, Usage,
+    SystemBlock, SystemPrompt, ThinkingConfig, ToolChoice, ToolDefinition, ToolInputSchema, Usage,
 };
