@@ -123,9 +123,6 @@ impl ConversationNamer {
             }
         }
 
-        println!("Formatted: {}", formatted);
-        println!("--------------------------------");
-
         formatted
     }
 
