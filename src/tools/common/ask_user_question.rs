@@ -37,7 +37,7 @@ struct AskUserQuestionInput {
     questions: Vec<QuestionInput>,
     /// Pre-filled answers (optional, not typically used)
     #[serde(default)]
-    answers: Option<std::collections::HashMap<String, String>>,
+    _answers: Option<std::collections::HashMap<String, String>>,
 }
 
 /// AskUserQuestion tool for interacting with users
