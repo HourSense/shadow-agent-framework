@@ -9,3 +9,6 @@ conversations/
 testfolder/
 test-2/
 test-3/
+sessions/
+
+.DS_Store
