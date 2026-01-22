@@ -291,7 +291,7 @@ impl StandardAgent {
             // Process tool use blocks and execute tools
             let mut tool_results: Vec<(String, ToolResult)> = Vec::new();
 
-            for block in &content_blocks {
+            for (index, block) in content_blocks.iter().enumerate() {
                 if let ContentBlock::ToolUse { id, name, input } = block {
                     tracing::info!("[StandardAgent] Tool use: {} ({})", name, id);
 
@@ -308,6 +308,26 @@ impl StandardAgent {
                     };
 
                     tool_results.push((id.clone(), result));
+
+                    // Check if user interrupted after tool execution (non-blocking check)
+                    // Use tokio::select with immediate timeout to check without blocking
+                    let interrupt_check = tokio::time::timeout(
+                        std::time::Duration::from_millis(0),
+                        internals.receive()
+                    );
+
+                    if let Ok(Some(InputMessage::Interrupt)) = interrupt_check.await {
+                        tracing::info!("[StandardAgent] Interrupt detected after tool execution");
+
+                        // For all remaining tools that haven't executed, add "Interrupted" error
+                        for remaining_block in content_blocks.iter().skip(index + 1) {
+                            if let ContentBlock::ToolUse { id: remaining_id, .. } = remaining_block {
+                                tool_results.push((remaining_id.clone(), ToolResult::error("Interrupted")));
+                            }
+                        }
+
+                        break;
+                    }
                 }
             }
 
@@ -315,6 +335,39 @@ impl StandardAgent {
             internals
                 .session
                 .add_message(Message::assistant_with_blocks(content_blocks))?;
+
+            // Check if any tool was interrupted
+            let has_interrupt = tool_results.iter().any(|(_, result)| {
+                result.is_error && matches!(&result.content, ToolResultData::Text(text) if text == "Interrupted")
+            });
+
+            if has_interrupt {
+                tracing::info!("[StandardAgent] Tool execution interrupted, ending turn");
+                // Add the interrupt results to history
+                let tool_result_blocks: Vec<ContentBlock> = tool_results
+                    .into_iter()
+                    .flat_map(|(id, result)| {
+                        match result.content {
+                            ToolResultData::Text(text) => {
+                                vec![ContentBlock::tool_result(&id, &text, result.is_error)]
+                            }
+                            _ => vec![]
+                        }
+                    })
+                    .collect();
+
+                internals
+                    .session
+                    .add_message(Message::user_with_blocks(tool_result_blocks))?;
+
+                // Add system message indicating the interrupt
+                internals
+                    .session
+                    .add_message(Message::assistant("<system>User interrupted this message</system>"))?;
+
+                // Break out of the loop
+                break;
+            }
 
             // If there were tool calls, add results and continue loop
             if !tool_results.is_empty() {
@@ -548,17 +601,24 @@ impl StandardAgent {
         let mut current_tool_id = String::new();
         let mut current_tool_name = String::new();
 
-        while let Some(event_result) = stream.next().await {
-            match event_result {
-                Ok(event) => {
-                    match event {
-                        StreamEvent::MessageStart(msg_start) => {
-                            tracing::debug!("[StandardAgent] Stream started");
-                            // Capture message metadata for logging
-                            message_id = Some(msg_start.message.id.clone());
-                            model = Some(msg_start.message.model.clone());
-                            initial_usage = Some(msg_start.message.usage.clone());
-                        }
+        loop {
+            tokio::select! {
+                event_result = stream.next() => {
+                    let event_result = match event_result {
+                        Some(result) => result,
+                        None => break, // Stream ended
+                    };
+
+                    match event_result {
+                        Ok(event) => {
+                            match event {
+                                StreamEvent::MessageStart(msg_start) => {
+                                    tracing::debug!("[StandardAgent] Stream started");
+                                    // Capture message metadata for logging
+                                    message_id = Some(msg_start.message.id.clone());
+                                    model = Some(msg_start.message.model.clone());
+                                    initial_usage = Some(msg_start.message.usage.clone());
+                                }
 
                         StreamEvent::ContentBlockStart(block_start) => {
                             current_block_index = Some(block_start.index);
@@ -669,6 +729,36 @@ impl StandardAgent {
                 Err(e) => {
                     tracing::error!("[StandardAgent] Stream error: {}", e);
                     return Err(e);
+                }
+            }
+                }
+
+                // Check for interrupt messages
+                msg = internals.receive() => {
+                    if let Some(InputMessage::Interrupt) = msg {
+                        tracing::info!("[StandardAgent] Interrupt received");
+
+                        // Finalize any in-progress text content block
+                        if !text_accum.is_empty() {
+                            content_blocks.push(ContentBlock::Text {
+                                text: text_accum.clone(),
+                                cache_control: None,
+                            });
+                        }
+                        // Discard incomplete thinking blocks (signature may be incomplete)
+                        // Discard partial tool calls (don't add them to content_blocks)
+
+                        // Remove all ToolUse blocks from content_blocks (discard all tool calls)
+                        content_blocks.retain(|block| !matches!(block, ContentBlock::ToolUse { .. }));
+
+                        // Append interrupt notification to the assistant's content blocks
+                        content_blocks.push(ContentBlock::Text {
+                            text: "<system>User interrupted this message</system>".to_string(),
+                            cache_control: None,
+                        });
+
+                        break;
+                    }
                 }
             }
         }

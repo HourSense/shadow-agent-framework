@@ -10,6 +10,7 @@ A Rust framework for building AI agents with Claude. Designed for applications t
    - [Prompt Caching](#prompt-caching)
    - [Streaming and History](#streaming-and-history)
    - [Image and PDF Support](#image-and-pdf-support)
+   - [Interrupt Handling](#interrupt-handling)
 4. [Module Reference](#module-reference)
    - [Runtime](#runtime-module)
    - [Session](#session-module)
@@ -416,6 +417,145 @@ Images and PDFs are automatically base64-encoded and sent to Claude:
 - Images and PDFs support prompt caching just like text content
 - The last content block (text, image, or PDF) gets cache control applied
 - This reduces costs when analyzing the same images/documents multiple times
+
+---
+
+### Interrupt Handling
+
+The SDK provides comprehensive interrupt handling to allow users to gracefully stop agent execution at any point. When an interrupt is sent via `InputMessage::Interrupt`, the agent will stop processing and add a system message to the conversation history.
+
+#### Interrupt Scenarios
+
+The agent can be interrupted in three different scenarios, each handled appropriately:
+
+##### 1. During LLM Streaming
+
+When the agent is streaming a response from Claude, users can interrupt mid-generation.
+
+**Behavior:**
+- Preserves partial text that was already streamed
+- Discards incomplete thinking blocks (to avoid signature issues)
+- Removes ALL tool calls (both completed and partial)
+- Adds `<system>User interrupted this message</system>` to the response
+- Ends the turn
+
+**Example:**
+```rust
+// User sends interrupt during streaming
+handle.send_interrupt().await?;
+```
+
+**History result:**
+```json
+{"role":"user","content":"Write an essay"}
+{"role":"assistant","content":[
+  {"type":"thinking","thinking":"...completed thinking..."},
+  {"type":"text","text":"Here is the partial essay text..."},
+  {"type":"text","text":"<system>User interrupted this message</system>"}
+]}
+```
+
+##### 2. During Permission Waiting
+
+When the agent is waiting for user permission to execute a tool, users can interrupt instead of approving/denying.
+
+**Behavior:**
+- Returns `ToolResult::error("Interrupted")` for the pending tool
+- Adds interrupt result to history
+- Adds `<system>User interrupted this message</system>` assistant message
+- Ends the turn (does NOT retry)
+
+**Example:**
+```rust
+// While agent is waiting for permission
+handle.send_interrupt().await?;
+```
+
+**History result:**
+```json
+{"role":"user","content":"Create a file"}
+{"role":"assistant","content":[{"type":"tool_use","id":"...","name":"Write","input":{...}}]}
+{"role":"user","content":[{"type":"tool_result","tool_use_id":"...","content":"Interrupted","is_error":true}]}
+{"role":"assistant","content":"<system>User interrupted this message</system>"}
+```
+
+##### 3. During Tool Execution
+
+When the agent is executing tools, users can interrupt between tool executions. **Important:** The currently executing tool will complete to avoid partial side effects.
+
+**Behavior:**
+- Lets the current tool complete execution
+- Returns actual results for all completed tools
+- Returns `ToolResult::error("Interrupted")` for unexecuted tools
+- Adds `<system>User interrupted this message</system>` to history
+- Ends the turn
+
+**Example (3 tools, interrupted after tool 2):**
+```json
+{"role":"user","content":"Read three files"}
+{"role":"assistant","content":[
+  {"type":"tool_use","id":"1","name":"Read","input":{"file_path":"file1.txt"}},
+  {"type":"tool_use","id":"2","name":"Read","input":{"file_path":"file2.txt"}},
+  {"type":"tool_use","id":"3","name":"Read","input":{"file_path":"file3.txt"}}
+]}
+{"role":"user","content":[
+  {"type":"tool_result","tool_use_id":"1","content":"actual file1 contents"},
+  {"type":"tool_result","tool_use_id":"2","content":"actual file2 contents"},
+  {"type":"tool_result","tool_use_id":"3","content":"Interrupted","is_error":true}
+]}
+{"role":"assistant","content":"<system>User interrupted this message</system>"}
+```
+
+#### Key Design Decisions
+
+1. **Let tools complete** - Don't interrupt mid-tool execution to avoid partial side effects (half-written files, incomplete API calls, etc.)
+
+2. **Preserve completed work** - Tools that finished before interrupt return their actual results
+
+3. **Consistent interrupt message** - All scenarios add `<system>User interrupted this message</system>` to history for context
+
+4. **No retries after interrupt** - Agent ends the turn immediately instead of trying to handle the interruption
+
+#### Implementation Details
+
+Interrupts are handled using `tokio::select!` for concurrent async operations:
+
+```rust
+// During streaming
+loop {
+    tokio::select! {
+        event_result = stream.next() => {
+            // Process stream events
+        }
+        msg = internals.receive() => {
+            if let Some(InputMessage::Interrupt) = msg {
+                // Handle interrupt
+                break;
+            }
+        }
+    }
+}
+
+// During tool execution
+for (index, block) in content_blocks.iter().enumerate() {
+    // Execute tool
+    let result = execute_tool(...).await;
+
+    // Check for interrupt (non-blocking)
+    if interrupt_detected() {
+        // Add "Interrupted" error for remaining tools
+        break;
+    }
+}
+```
+
+#### Known Limitations
+
+1. **Non-streaming LLM calls** - When using non-streaming mode (`streaming_enabled: false`), interrupts won't be detected during the LLM call itself. The interrupt will only be processed after the full response arrives. This primarily affects extended thinking scenarios.
+
+2. **Long-running tools** - Individual tools that take a very long time will complete fully before the interrupt is detected. Future enhancement could pass cancellation tokens to tools for graceful internal interruption.
+
+3. **Shutdown handling** - Currently only handles `InputMessage::Interrupt`. `InputMessage::Shutdown` could be handled similarly for graceful shutdown during streaming/execution.
 
 ---
 
