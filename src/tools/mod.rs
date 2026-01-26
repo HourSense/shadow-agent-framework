@@ -18,6 +18,6 @@ pub use tool::{Tool, ToolInfo, ToolResult, ToolResultData};
 
 // Re-export common tools for convenience
 pub use common::{
-    AskUserQuestionTool, BashTool, EditTool, GlobTool, GrepTool, ReadTool, TodoWriteTool,
-    WebFetchTool, WriteTool,
+    AskUserQuestionTool, BashTool, EditTool, GlobTool, GrepTool, PresentFileTool, ReadTool,
+    TodoWriteTool, WebFetchTool, WriteTool,
 };
