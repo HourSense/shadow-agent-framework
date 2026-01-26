@@ -9,6 +9,7 @@
 //! - `GlobTool` - Find files by pattern
 //! - `GrepTool` - Search file contents
 //! - `TodoWriteTool` - Manage todo lists
+//! - `WebFetchTool` - Fetch/scrape web pages using Firecrawl
 
 pub mod ask_user_question;
 pub mod bash;
@@ -17,6 +18,7 @@ pub mod glob_tool;
 pub mod grep_tool;
 pub mod read_tool;
 pub mod todo;
+pub mod web_fetch;
 pub mod write_tool;
 
 pub use ask_user_question::AskUserQuestionTool;
@@ -26,4 +28,5 @@ pub use glob_tool::GlobTool;
 pub use grep_tool::GrepTool;
 pub use read_tool::ReadTool;
 pub use todo::TodoWriteTool;
+pub use web_fetch::WebFetchTool;
 pub use write_tool::WriteTool;
