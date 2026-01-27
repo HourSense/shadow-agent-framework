@@ -60,10 +60,9 @@ impl StandardAgent {
 
         // Initialize debugger if enabled
         if self.config.debug_enabled {
-            let session_dir = internals
-                .session
-                .storage()
-                .session_dir(internals.session.session_id());
+            let session = internals.session.read().await;
+            let session_dir = session.storage().session_dir(session.session_id());
+            drop(session);
 
             match Debugger::new(&session_dir) {
                 Ok(debugger) => {
@@ -119,11 +118,12 @@ impl StandardAgent {
                         }
 
                         // Auto-name conversation after first turn
-                        if self.config.auto_name_conversation
-                            && internals.context.current_turn == 0
-                            && !internals.session.has_conversation_name()
+                        if self.config.auto_name_conversation && internals.context.current_turn == 0
                         {
-                            self.generate_conversation_name(&mut internals).await;
+                            let has_name = internals.session.read().await.has_conversation_name();
+                            if !has_name {
+                                self.generate_conversation_name(&mut internals).await;
+                            }
                         }
                     }
 
@@ -132,7 +132,7 @@ impl StandardAgent {
 
                     // Persist session if configured
                     if self.config.auto_save_session {
-                        if let Err(e) = internals.session.save() {
+                        if let Err(e) = internals.session.write().await.save() {
                             tracing::error!("[StandardAgent] Failed to save session: {}", e);
                         }
                     }
@@ -167,10 +167,16 @@ impl StandardAgent {
         tracing::debug!("[StandardAgent] Generating conversation name...");
 
         let namer = ConversationNamer::new(&self.llm);
-        match namer.generate_name(internals.session.history()).await {
+        let history = {
+            let session = internals.session.read().await;
+            session.history().to_vec()
+        };
+
+        match namer.generate_name(&history).await {
             Ok(name) => {
                 tracing::info!("[StandardAgent] Generated conversation name: {}", name);
-                if let Err(e) = internals.session.set_conversation_name(&name) {
+                let mut session = internals.session.write().await;
+                if let Err(e) = session.set_conversation_name(&name) {
                     tracing::warn!(
                         "[StandardAgent] Failed to save conversation name: {}",
                         e
@@ -212,7 +218,7 @@ impl StandardAgent {
         };
 
         // Add user message to history
-        internals.session.add_message(user_message)?;
+        internals.session.write().await.add_message(user_message)?;
 
         // Get tool definitions
         let tool_definitions = self.config.tool_definitions();
@@ -232,7 +238,10 @@ impl StandardAgent {
             }
 
             // Get messages from history
-            let messages = internals.session.history().to_vec();
+            let messages = {
+                let session = internals.session.read().await;
+                session.history().to_vec()
+            };
 
             // IMPORTANT: Apply cache control BEFORE injections
             // This ensures we cache the stable message content (without dynamic injections)
@@ -360,6 +369,8 @@ impl StandardAgent {
             // Add assistant message to history
             internals
                 .session
+                .write()
+                .await
                 .add_message(Message::assistant_with_blocks(content_blocks))?;
 
             // Check if any tool was interrupted
@@ -384,11 +395,15 @@ impl StandardAgent {
 
                 internals
                     .session
+                    .write()
+                    .await
                     .add_message(Message::user_with_blocks(tool_result_blocks))?;
 
                 // Add system message indicating the interrupt
                 internals
                     .session
+                    .write()
+                    .await
                     .add_message(Message::assistant("<vibe-working-agent-system>User interrupted this message</vibe-working-agent-system>"))?;
 
                 // Break out of the loop
@@ -439,6 +454,8 @@ impl StandardAgent {
 
                 internals
                     .session
+                    .write()
+                    .await
                     .add_message(Message::user_with_blocks(tool_result_blocks))?;
 
                 // Continue to next LLM call

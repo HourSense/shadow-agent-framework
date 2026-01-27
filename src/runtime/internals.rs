@@ -25,7 +25,8 @@ use super::channels::{InputReceiver, OutputSender};
 /// The agent uses this to receive input and send output.
 pub struct AgentInternals {
     /// The agent's session (history, metadata)
-    pub session: AgentSession,
+    /// Wrapped in Arc<RwLock> to allow shared access with AgentHandle
+    pub session: Arc<RwLock<AgentSession>>,
 
     /// The agent's context (passed to tools)
     pub context: AgentContext,
@@ -48,7 +49,7 @@ impl AgentInternals {
     ///
     /// This is typically called by `AgentRuntime::spawn()`, not directly.
     pub fn new(
-        session: AgentSession,
+        session: Arc<RwLock<AgentSession>>,
         context: AgentContext,
         permissions: PermissionManager,
         input_rx: InputReceiver,
@@ -607,6 +608,7 @@ mod tests {
         let global_permissions = Arc::new(GlobalPermissions::new());
         let permissions = PermissionManager::new(global_permissions, "test-agent");
 
+        let session = Arc::new(RwLock::new(session));
         let internals = AgentInternals::new(session, context, permissions, input_rx, output_tx, state);
 
         (internals, input_tx, output_rx)

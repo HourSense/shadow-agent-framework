@@ -1031,7 +1031,16 @@ let is_done = handle.is_done().await;
 // Control
 handle.interrupt().await;  // Cancel current operation
 handle.shutdown().await;   // Stop agent entirely
+
+// Access session metadata (even while agent is running!)
+handle.set_custom_metadata("working_folder", "/path/to/folder").await?;
+let folder = handle.get_custom_metadata("working_folder").await;
+
+handle.set_conversation_name("Debug Python script").await?;
+let name = handle.conversation_name().await;
 ```
+
+**Session Metadata Access**: The handle now provides direct access to the running agent's session metadata. This allows you to update metadata (like working folder, user preferences, etc.) while the agent is running without race conditions.
 
 ### Session Module
 
@@ -1119,6 +1128,35 @@ if AgentSession::exists("session-id") {
     // ...
 }
 ```
+
+#### Updating Session Metadata (Running Agents)
+
+When an agent is running, you should update metadata through the `AgentHandle` to avoid race conditions:
+
+```rust
+// Get the handle for a running agent
+if let Some(handle) = runtime.get("session-id").await {
+    // Agent is running - update via handle
+    handle.set_custom_metadata("working_folder", "/path/to/project").await?;
+    handle.set_custom_metadata("user_preferences", serde_json::json!({
+        "theme": "dark",
+        "language": "en"
+    })).await?;
+
+    // Read metadata
+    let folder = handle.get_custom_metadata("working_folder").await;
+
+    // Set conversation name
+    handle.set_conversation_name("Debugging Python script").await?;
+} else {
+    // Agent not running - update disk directly
+    let mut metadata = SessionStorage::default().load_metadata("session-id")?;
+    metadata.set_custom("working_folder", "/path/to/project");
+    SessionStorage::default().save_metadata(&metadata)?;
+}
+```
+
+**Why use the handle?** When an agent is running, it has an in-memory copy of the session. If you modify the disk directly, the agent will overwrite your changes on the next save. The handle provides thread-safe access to the shared session.
 
 #### Conversation Naming
 
@@ -1976,6 +2014,23 @@ cargo run --example session_browser
 | `with_injection_chain(chain)` | Set context injections |
 | `with_auto_name(bool)` | Auto-name conversations (default: true) |
 | `with_prompt_caching(bool)` | Enable/disable prompt caching (default: true) |
+
+### AgentHandle Methods
+
+| Method | Description |
+|--------|-------------|
+| `handle.send_input(text)` | Send user input |
+| `handle.send_permission_response(tool, allowed, remember)` | Respond to permission request |
+| `handle.send_tool_result(tool_use_id, result)` | Send async tool result |
+| `handle.subscribe()` | Subscribe to output stream |
+| `handle.state()` | Get current state |
+| `handle.is_idle()` / `is_processing()` / `is_done()` | Check specific state |
+| `handle.interrupt()` | Cancel current operation |
+| `handle.shutdown()` | Stop agent |
+| `handle.set_custom_metadata(key, value)` | Update session metadata (works on running agent!) |
+| `handle.get_custom_metadata(key)` | Get session metadata |
+| `handle.set_conversation_name(name)` | Set conversation name |
+| `handle.conversation_name()` | Get conversation name |
 
 ### Session Methods
 

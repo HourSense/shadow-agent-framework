@@ -109,6 +109,9 @@ impl AgentRuntime {
         let session_id = session.session_id().to_string();
         let agent_type = session.agent_type().to_string();
 
+        // Wrap session in Arc<RwLock> for shared access
+        let session = Arc::new(RwLock::new(session));
+
         // Create channels
         let (input_tx, input_rx, output_tx) = create_agent_channels();
 
@@ -116,12 +119,14 @@ impl AgentRuntime {
         let state = Arc::new(RwLock::new(AgentState::Idle));
 
         // Create context from session
+        let session_read = session.read().await;
         let mut context = AgentContext::new(
-            session.session_id(),
-            session.agent_type(),
-            session.name(),
-            session.description(),
+            session_read.session_id(),
+            session_read.agent_type(),
+            session_read.name(),
+            session_read.description(),
         );
+        drop(session_read); // Release the lock
 
         // Add SubAgentManager to context for tracking spawned subagents
         context.insert_resource(SubAgentManager::new());
@@ -138,7 +143,7 @@ impl AgentRuntime {
 
         // Create internals for the agent
         let internals = AgentInternals::new(
-            session,
+            session.clone(),
             context,
             permissions,
             input_rx,
@@ -149,6 +154,7 @@ impl AgentRuntime {
         // Create handle for external use
         let handle = AgentHandle::new(
             session_id.clone(),
+            session,
             input_tx,
             output_tx,
             state,

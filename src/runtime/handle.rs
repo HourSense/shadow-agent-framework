@@ -11,6 +11,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use crate::core::{AgentState, FrameworkError, FrameworkResult, InputMessage};
+use crate::session::AgentSession;
 use crate::tools::ToolResult;
 
 use super::channels::{InputSender, OutputReceiver, OutputSender};
@@ -23,6 +24,9 @@ use super::channels::{InputSender, OutputReceiver, OutputSender};
 pub struct AgentHandle {
     /// Session ID of this agent
     session_id: String,
+
+    /// Shared access to the agent's session
+    session: Arc<RwLock<AgentSession>>,
 
     /// Sender for input messages (to agent)
     input_tx: InputSender,
@@ -40,12 +44,14 @@ impl AgentHandle {
     /// This is typically called by `AgentRuntime::spawn()`, not directly.
     pub fn new(
         session_id: impl Into<String>,
+        session: Arc<RwLock<AgentSession>>,
         input_tx: InputSender,
         output_tx: OutputSender,
         state: Arc<RwLock<AgentState>>,
     ) -> Self {
         Self {
             session_id: session_id.into(),
+            session,
             input_tx,
             output_tx,
             state,
@@ -209,6 +215,50 @@ impl AgentHandle {
             tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
         }
     }
+
+    // =========================================================================
+    // Session Metadata Methods
+    // =========================================================================
+
+    /// Set custom metadata on the session
+    ///
+    /// This directly modifies the session's metadata and saves it to disk.
+    /// Use this to update metadata while the agent is running.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// handle.set_custom_metadata("working_folder", "/path/to/folder").await?;
+    /// ```
+    pub async fn set_custom_metadata(
+        &self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> FrameworkResult<()> {
+        let mut session = self.session.write().await;
+        session.set_custom(key, value);
+        session.save()?;
+        Ok(())
+    }
+
+    /// Get custom metadata from the session
+    pub async fn get_custom_metadata(&self, key: &str) -> Option<serde_json::Value> {
+        let session = self.session.read().await;
+        session.get_custom(key).cloned()
+    }
+
+    /// Get the conversation name
+    pub async fn conversation_name(&self) -> Option<String> {
+        let session = self.session.read().await;
+        session.conversation_name().map(|s| s.to_string())
+    }
+
+    /// Set the conversation name
+    pub async fn set_conversation_name(&self, name: impl Into<String>) -> FrameworkResult<()> {
+        let mut session = self.session.write().await;
+        session.set_conversation_name(name)?;
+        Ok(())
+    }
 }
 
 impl std::fmt::Debug for AgentHandle {
@@ -225,17 +275,31 @@ mod tests {
     use super::*;
     use crate::core::OutputChunk;
     use crate::runtime::channels::create_agent_channels;
+    use crate::session::{AgentSession, SessionStorage};
+    use tempfile::TempDir;
 
-    fn create_test_handle() -> (AgentHandle, super::super::channels::InputReceiver) {
+    fn create_test_handle() -> (AgentHandle, super::super::channels::InputReceiver, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = SessionStorage::with_dir(temp_dir.path());
+        let session = AgentSession::new_with_storage(
+            "test-session",
+            "test-agent",
+            "Test Agent",
+            "A test agent",
+            storage,
+        )
+        .unwrap();
+        let session = Arc::new(RwLock::new(session));
+
         let (input_tx, input_rx, output_tx) = create_agent_channels();
         let state = Arc::new(RwLock::new(AgentState::Idle));
-        let handle = AgentHandle::new("test-session", input_tx, output_tx, state);
-        (handle, input_rx)
+        let handle = AgentHandle::new("test-session", session, input_tx, output_tx, state);
+        (handle, input_rx, temp_dir)
     }
 
     #[tokio::test]
     async fn test_send_input() {
-        let (handle, mut rx) = create_test_handle();
+        let (handle, mut rx, _temp) = create_test_handle();
 
         handle.send_input("Hello").await.unwrap();
 
@@ -245,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_interrupt() {
-        let (handle, mut rx) = create_test_handle();
+        let (handle, mut rx, _temp) = create_test_handle();
 
         handle.interrupt().await.unwrap();
 
@@ -255,7 +319,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_shutdown() {
-        let (handle, mut rx) = create_test_handle();
+        let (handle, mut rx, _temp) = create_test_handle();
 
         handle.shutdown().await.unwrap();
 
@@ -265,7 +329,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_subscribe() {
-        let (handle, _rx) = create_test_handle();
+        let (handle, _rx, _temp) = create_test_handle();
 
         // Create subscribers
         let mut sub1 = handle.subscribe();
@@ -290,9 +354,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = SessionStorage::with_dir(temp_dir.path());
+        let session = AgentSession::new_with_storage(
+            "test",
+            "test-agent",
+            "Test",
+            "Test",
+            storage,
+        )
+        .unwrap();
+        let session = Arc::new(RwLock::new(session));
+
         let (input_tx, _input_rx, output_tx) = create_agent_channels();
         let state = Arc::new(RwLock::new(AgentState::Idle));
-        let handle = AgentHandle::new("test", input_tx, output_tx, state.clone());
+        let handle = AgentHandle::new("test", session, input_tx, output_tx, state.clone());
 
         assert!(handle.is_idle().await);
         assert!(handle.is_running().await);
@@ -308,13 +384,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_id() {
-        let (handle, _rx) = create_test_handle();
+        let (handle, _rx, _temp) = create_test_handle();
         assert_eq!(handle.session_id(), "test-session");
     }
 
     #[tokio::test]
     async fn test_send_permission_response() {
-        let (handle, mut rx) = create_test_handle();
+        let (handle, mut rx, _temp) = create_test_handle();
 
         handle
             .send_permission_response("Bash", true, false)
@@ -334,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_clone() {
-        let (handle1, mut rx) = create_test_handle();
+        let (handle1, mut rx, _temp) = create_test_handle();
         let handle2 = handle1.clone();
 
         // Both handles point to same session

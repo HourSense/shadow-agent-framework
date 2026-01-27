@@ -200,19 +200,34 @@ mod tests {
     use super::*;
     use crate::core::AgentState;
     use crate::runtime::channels::create_agent_channels;
+    use crate::session::{AgentSession, SessionStorage};
     use std::sync::Arc;
+    use tempfile::TempDir;
     use tokio::sync::RwLock as TokioRwLock;
 
-    fn create_test_handle(session_id: &str) -> AgentHandle {
+    fn create_test_handle(session_id: &str) -> (AgentHandle, TempDir) {
+        let temp_dir = TempDir::new().unwrap();
+        let storage = SessionStorage::with_dir(temp_dir.path());
+        let session = AgentSession::new_with_storage(
+            session_id,
+            "test-agent",
+            "Test",
+            "Test",
+            storage,
+        )
+        .unwrap();
+        let session = Arc::new(TokioRwLock::new(session));
+
         let (input_tx, _input_rx, output_tx) = create_agent_channels();
         let state = Arc::new(TokioRwLock::new(AgentState::Idle));
-        AgentHandle::new(session_id.to_string(), input_tx, output_tx, state)
+        let handle = AgentHandle::new(session_id.to_string(), session, input_tx, output_tx, state);
+        (handle, temp_dir)
     }
 
     #[test]
     fn test_register_and_get() {
         let manager = SubAgentManager::new();
-        let handle = create_test_handle("sub-1");
+        let (handle, _temp) = create_test_handle("sub-1");
 
         manager.register("sub-1", handle.clone());
 
@@ -225,7 +240,7 @@ mod tests {
     #[test]
     fn test_mark_completed() {
         let manager = SubAgentManager::new();
-        let handle = create_test_handle("sub-1");
+        let (handle, _temp) = create_test_handle("sub-1");
 
         manager.register("sub-1", handle);
         manager.mark_completed("sub-1", "test-agent", Some("Done".to_string()), true, None);
@@ -242,8 +257,10 @@ mod tests {
     #[test]
     fn test_active_session_ids() {
         let manager = SubAgentManager::new();
-        manager.register("sub-1", create_test_handle("sub-1"));
-        manager.register("sub-2", create_test_handle("sub-2"));
+        let (handle1, _temp1) = create_test_handle("sub-1");
+        manager.register("sub-1", handle1);
+        let (handle2, _temp2) = create_test_handle("sub-2");
+        manager.register("sub-2", handle2);
 
         let ids = manager.active_session_ids();
         assert_eq!(ids.len(), 2);
@@ -254,7 +271,8 @@ mod tests {
     #[test]
     fn test_remove() {
         let manager = SubAgentManager::new();
-        manager.register("sub-1", create_test_handle("sub-1"));
+        let (handle1, _temp1) = create_test_handle("sub-1");
+        manager.register("sub-1", handle1);
         manager.mark_completed("sub-1", "test", None, true, None);
 
         assert!(manager.exists("sub-1"));

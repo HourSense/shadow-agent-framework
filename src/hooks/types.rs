@@ -151,13 +151,23 @@ impl<'a> HookContext<'a> {
     // === Convenience methods ===
 
     /// Get conversation history
-    pub fn messages(&self) -> &[Message] {
-        self.internals.session.history()
+    ///
+    /// Note: This returns a cloned copy of the messages since the session
+    /// is now behind an Arc<RwLock>. If you need to modify messages, use
+    /// the session directly through async access.
+    pub fn messages(&self) -> Vec<Message> {
+        let session = self.internals.session.blocking_read();
+        session.history().to_vec()
     }
 
-    /// Get mutable conversation history - modify in place
-    pub fn messages_mut(&mut self) -> &mut Vec<Message> {
-        self.internals.session.history_mut()
+    /// Get conversation history (deprecated - hooks should not mutate history directly)
+    ///
+    /// This method is kept for backwards compatibility but will block.
+    /// Consider using async access to the session if you need to modify history.
+    #[deprecated(note = "Use async session access instead of synchronous mutation")]
+    pub fn messages_mut(&mut self) -> Vec<Message> {
+        let session = self.internals.session.blocking_read();
+        session.history().to_vec()
     }
 
     /// Get session ID
