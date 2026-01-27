@@ -20,7 +20,6 @@ pub mod grep_tool;
 pub mod present_file;
 pub mod read_tool;
 pub mod todo;
-pub mod web_fetch;
 pub mod write_tool;
 
 pub use ask_user_question::AskUserQuestionTool;
@@ -31,5 +30,4 @@ pub use grep_tool::GrepTool;
 pub use present_file::PresentFileTool;
 pub use read_tool::ReadTool;
 pub use todo::TodoWriteTool;
-pub use web_fetch::WebFetchTool;
 pub use write_tool::WriteTool;
