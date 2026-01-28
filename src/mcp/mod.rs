@@ -12,21 +12,48 @@
 //!
 //! # Usage
 //!
+//! ## Recommended: Custom Transport (Full Control)
+//!
+//! For maximum flexibility (auth headers, custom settings, etc.):
+//!
 //! ```ignore
-//! use shadow_agent_sdk::mcp::{MCPConfig, MCPServerConfig};
-//! use shadow_agent_sdk::agent::AgentConfig;
+//! use shadow_agent_sdk::mcp::{MCPServerManager, MCPToolProvider};
+//! use shadow_agent_sdk::tools::ToolRegistry;
+//! use rmcp::transport::StreamableHttpClientTransport;
+//! use rmcp::ServiceExt;
+//! use std::sync::Arc;
 //!
-//! // Configure MCP servers
-//! let mcp_config = MCPConfig::new()
-//!     .add_server(MCPServerConfig::new(
-//!         "filesystem",
-//!         "http://localhost:8005/mcp"
-//!     ));
+//! // Create transport with custom configuration
+//! let transport = StreamableHttpClientTransport::from_uri("http://localhost:8005/mcp")
+//!     .with_header("Authorization", "Bearer your-token")
+//!     .with_header("X-Custom", "value");
 //!
-//! // Create agent with MCP support
-//! let config = AgentConfig::new("You are helpful")
-//!     .with_mcp_servers(mcp_config)
-//!     .await?;
+//! let service = ().serve(transport).await?;
+//!
+//! // Add to manager
+//! let mcp_manager = Arc::new(MCPServerManager::new());
+//! mcp_manager.add_service("filesystem", service).await?;
+//!
+//! // Add to tool registry
+//! let mcp_provider = Arc::new(MCPToolProvider::new(mcp_manager));
+//! tool_registry.add_provider(mcp_provider).await?;
+//! ```
+//!
+//! ## Simple: URI-based Configuration
+//!
+//! For simple cases without auth:
+//!
+//! ```ignore
+//! use shadow_agent_sdk::mcp::{MCPServerManager, MCPServerConfig, MCPToolProvider};
+//!
+//! let mcp_manager = Arc::new(MCPServerManager::new());
+//! mcp_manager.add_server(MCPServerConfig::new(
+//!     "filesystem",
+//!     "http://localhost:8005/mcp"
+//! )).await?;
+//!
+//! let mcp_provider = Arc::new(MCPToolProvider::new(mcp_manager));
+//! tool_registry.add_provider(mcp_provider).await?;
 //! ```
 //!
 //! # Tool Namespacing
@@ -34,7 +61,7 @@
 //! MCP tools are automatically namespaced with their server ID to avoid conflicts:
 //! - Server ID: `filesystem`
 //! - Original tool name: `read_file`
-//! - Exposed name: `filesystem:read_file`
+//! - Exposed name: `filesystem__read_file`
 
 mod config;
 mod manager;

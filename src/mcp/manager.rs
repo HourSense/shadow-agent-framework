@@ -37,7 +37,47 @@ impl MCPServerManager {
         }
     }
 
-    /// Add and connect to a new MCP server
+    /// Add an MCP server from an existing RunningService
+    ///
+    /// This is the recommended way to add servers as it gives you full control
+    /// over transport configuration (auth headers, custom settings, etc.)
+    ///
+    /// # Example
+    /// ```no_run
+    /// use rmcp::transport::StreamableHttpClientTransport;
+    /// use rmcp::ServiceExt;
+    ///
+    /// let transport = StreamableHttpClientTransport::from_uri("http://localhost:8005/mcp")
+    ///     .with_header("Authorization", "Bearer token");
+    /// let service = ().serve(transport).await?;
+    /// manager.add_service("my-server", service).await?;
+    /// ```
+    pub async fn add_service(
+        &self,
+        id: impl Into<String>,
+        service: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    ) -> Result<()> {
+        let id = id.into();
+
+        // Check if server already exists
+        if self.servers.read().await.contains_key(&id) {
+            return Err(anyhow!("MCP server '{}' already exists", id));
+        }
+
+        let server = Arc::new(MCPServer::from_service(id.clone(), service));
+
+        // Add to map
+        self.servers.write().await.insert(id.clone(), server);
+
+        tracing::info!("[MCPServerManager] Added MCP server '{}'", id);
+
+        Ok(())
+    }
+
+    /// Add and connect to a new MCP server using a simple URI
+    ///
+    /// This is a convenience method for simple cases. For more control (auth, custom headers),
+    /// use `add_service()` instead.
     pub async fn add_server(&self, config: MCPServerConfig) -> Result<()> {
         if !config.enabled {
             tracing::info!(

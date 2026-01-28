@@ -52,3 +52,7 @@ regex = "1.12.2"
 
 # MCP (Model Context Protocol) support
 rmcp = { version = "0.14", features = ["client", "transport-streamable-http-client", "transport-streamable-http-client-reqwest"] }
+
+[[example]]
+name = "mcp_agent"
+path = "examples/mcp_agent/main.rs"

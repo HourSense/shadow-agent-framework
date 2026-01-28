@@ -25,18 +25,44 @@ pub struct MCPServer {
     /// Unique identifier for this server
     id: String,
 
-    /// URI of the server
-    uri: String,
+    /// URI of the server (optional - only used for reconnection)
+    uri: Option<String>,
 
     /// The underlying rmcp service (None if not connected)
     service: Arc<RwLock<Option<RunningService<RoleClient, ()>>>>,
-
-    /// Configuration
-    config: MCPServerConfig,
 }
 
 impl MCPServer {
-    /// Create a new MCP server and connect to it
+    /// Create a new MCP server from an existing RunningService
+    ///
+    /// This is the recommended way to create an MCP server as it gives you full control
+    /// over the transport configuration (auth headers, custom settings, etc.)
+    ///
+    /// # Example
+    /// ```no_run
+    /// use rmcp::transport::StreamableHttpClientTransport;
+    /// use rmcp::ServiceExt;
+    ///
+    /// let transport = StreamableHttpClientTransport::from_uri("http://localhost:8005/mcp")
+    ///     .with_header("Authorization", "Bearer token");
+    /// let service = ().serve(transport).await?;
+    /// let server = MCPServer::from_service("my-server", service);
+    /// ```
+    pub fn from_service(id: impl Into<String>, service: RunningService<RoleClient, ()>) -> Self {
+        let id = id.into();
+        tracing::info!("[MCPServer] Created MCP server '{}'", id);
+
+        Self {
+            id,
+            uri: None,
+            service: Arc::new(RwLock::new(Some(service))),
+        }
+    }
+
+    /// Create a new MCP server and connect to it using a simple URI
+    ///
+    /// This is a convenience method for simple cases. For more control (auth, custom headers),
+    /// use `from_service()` instead.
     pub async fn new(config: MCPServerConfig) -> Result<Self> {
         let id = config.id.clone();
         let uri = config.uri.clone();
@@ -47,9 +73,8 @@ impl MCPServer {
 
         Ok(Self {
             id,
-            uri,
+            uri: Some(uri),
             service: Arc::new(RwLock::new(Some(service))),
-            config,
         })
     }
 
@@ -69,9 +94,9 @@ impl MCPServer {
         &self.id
     }
 
-    /// Get the server URI
-    pub fn uri(&self) -> &str {
-        &self.uri
+    /// Get the server URI (if available)
+    pub fn uri(&self) -> Option<&str> {
+        self.uri.as_deref()
     }
 
     /// Check if the server is connected
@@ -80,7 +105,13 @@ impl MCPServer {
     }
 
     /// Reconnect to the server
+    ///
+    /// Only works for servers created with `new()` that have a URI.
+    /// Servers created with `from_service()` cannot be reconnected automatically.
     pub async fn reconnect(&self) -> Result<()> {
+        let uri = self.uri.as_ref()
+            .ok_or_else(|| anyhow!("Cannot reconnect server '{}': no URI available (created from external service)", self.id))?;
+
         tracing::info!("[MCPServer] Reconnecting to '{}'", self.id);
 
         let mut service_guard = self.service.write().await;
@@ -89,7 +120,7 @@ impl MCPServer {
         *service_guard = None;
 
         // Create new connection
-        let service = Self::create_service(&self.uri).await?;
+        let service = Self::create_service(uri).await?;
         *service_guard = Some(service);
 
         tracing::info!("[MCPServer] Successfully reconnected to '{}'", self.id);
@@ -152,11 +183,6 @@ impl MCPServer {
     pub async fn health_check(&self) -> Result<()> {
         self.list_tools().await?;
         Ok(())
-    }
-
-    /// Get configuration
-    pub fn config(&self) -> &MCPServerConfig {
-        &self.config
     }
 }
 

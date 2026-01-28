@@ -38,8 +38,8 @@ impl MCPToolAdapter {
         server: Arc<MCPServer>,
         rmcp_tool: rmcp::model::Tool,
     ) -> Self {
-        // Create namespaced name: "server_id:tool_name"
-        let exposed_name = format!("{}:{}", server_id, rmcp_tool.name);
+        // Create namespaced name: "server_id__tool_name" (double underscore for clarity)
+        let exposed_name = format!("{}__{}", server_id, rmcp_tool.name);
 
         // Convert rmcp tool definition to framework ToolDefinition
         let tool_definition = Self::convert_tool_definition(&exposed_name, &rmcp_tool);
@@ -226,12 +226,12 @@ mod tests {
             meta: None,
         };
 
-        let def = MCPToolAdapter::convert_tool_definition("server:test_tool", &rmcp_tool);
+        let def = MCPToolAdapter::convert_tool_definition("server__test_tool", &rmcp_tool);
 
         // Check the name through pattern matching
         match &def {
             ToolDefinition::Custom(custom) => {
-                assert_eq!(custom.name, "server:test_tool");
+                assert_eq!(custom.name, "server__test_tool");
                 assert_eq!(custom.description, Some("A test tool".to_string()));
             }
             _ => panic!("Expected CustomTool"),
