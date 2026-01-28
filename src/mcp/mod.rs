@@ -12,25 +12,82 @@
 //!
 //! # Usage
 //!
-//! ## Recommended: Custom Transport (Full Control)
+//! ## Recommended: With JWT Refresh (For Proxied/Auth Servers)
 //!
-//! For maximum flexibility (auth headers, custom settings, etc.):
+//! For servers requiring JWT tokens that expire:
 //!
 //! ```ignore
 //! use shadow_agent_sdk::mcp::{MCPServerManager, MCPToolProvider};
-//! use shadow_agent_sdk::tools::ToolRegistry;
+//! use rmcp::transport::StreamableHttpClientTransport;
+//! use rmcp::ServiceExt;
+//! use std::sync::Arc;
+//! use std::time::{Duration, Instant};
+//! use tokio::sync::RwLock;
+//!
+//! // Track when we last refreshed
+//! let last_refresh = Arc::new(RwLock::new(Instant::now()));
+//! let jwt_provider = Arc::new(MyJwtProvider::new());
+//!
+//! // Create refresher callback (called before EVERY MCP operation)
+//! let refresher = {
+//!     let last_refresh = last_refresh.clone();
+//!     let jwt = jwt_provider.clone();
+//!
+//!     move || {
+//!         let last_refresh = last_refresh.clone();
+//!         let jwt = jwt.clone();
+//!
+//!         async move {
+//!             // Check if we need to refresh (e.g., every 50 minutes for 1hr JWT)
+//!             let mut last = last_refresh.write().await;
+//!             if last.elapsed() < Duration::from_secs(50 * 60) {
+//!                 return Ok(None); // Still valid, no refresh needed
+//!             }
+//!
+//!             // Get fresh JWT and create new service
+//!             let token = jwt.get_fresh_token().await?;
+//!             let transport = StreamableHttpClientTransport::from_uri("https://backend/mcp-proxy")
+//!                 .with_header("Authorization", format!("Bearer {}", token));
+//!             let service = ().serve(transport).await?;
+//!
+//!             *last = Instant::now();
+//!             Ok(Some(service)) // Replace with new service
+//!         }
+//!     }
+//! };
+//!
+//! // Create initial service
+//! let initial_token = jwt_provider.get_fresh_token().await?;
+//! let transport = StreamableHttpClientTransport::from_uri("https://backend/mcp-proxy")
+//!     .with_header("Authorization", format!("Bearer {}", initial_token));
+//! let service = ().serve(transport).await?;
+//!
+//! // Add to manager with refresher
+//! let mcp_manager = Arc::new(MCPServerManager::new());
+//! mcp_manager.add_service_with_refresher("remote-mcp", service, refresher).await?;
+//!
+//! // Add to tool registry
+//! let mcp_provider = Arc::new(MCPToolProvider::new(mcp_manager));
+//! tool_registry.add_provider(mcp_provider).await?;
+//! ```
+//!
+//! ## Simple: Static Auth Headers
+//!
+//! For servers with static auth (no token refresh):
+//!
+//! ```ignore
+//! use shadow_agent_sdk::mcp::{MCPServerManager, MCPToolProvider};
 //! use rmcp::transport::StreamableHttpClientTransport;
 //! use rmcp::ServiceExt;
 //! use std::sync::Arc;
 //!
-//! // Create transport with custom configuration
+//! // Create transport with static auth
 //! let transport = StreamableHttpClientTransport::from_uri("http://localhost:8005/mcp")
-//!     .with_header("Authorization", "Bearer your-token")
-//!     .with_header("X-Custom", "value");
+//!     .with_header("Authorization", "Bearer static-token");
 //!
 //! let service = ().serve(transport).await?;
 //!
-//! // Add to manager
+//! // Add to manager (no refresher)
 //! let mcp_manager = Arc::new(MCPServerManager::new());
 //! mcp_manager.add_service("filesystem", service).await?;
 //!
@@ -73,5 +130,5 @@ mod tool_adapter;
 pub use config::{MCPConfig, MCPServerConfig};
 pub use manager::{MCPServerManager, MCPToolInfo};
 pub use provider::MCPToolProvider;
-pub use server::MCPServer;
+pub use server::{service_refresher, MCPServer, ServiceRefreshFuture, ServiceRefresher};
 pub use tool_adapter::MCPToolAdapter;

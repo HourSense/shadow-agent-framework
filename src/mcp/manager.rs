@@ -39,8 +39,8 @@ impl MCPServerManager {
 
     /// Add an MCP server from an existing RunningService
     ///
-    /// This is the recommended way to add servers as it gives you full control
-    /// over transport configuration (auth headers, custom settings, etc.)
+    /// For simple cases without auth refresh. For JWT scenarios,
+    /// use `add_service_with_refresher()` instead.
     ///
     /// # Example
     /// ```no_run
@@ -70,6 +70,85 @@ impl MCPServerManager {
         self.servers.write().await.insert(id.clone(), server);
 
         tracing::info!("[MCPServerManager] Added MCP server '{}'", id);
+
+        Ok(())
+    }
+
+    /// Add an MCP server with a service refresher callback
+    ///
+    /// This is the recommended way for JWT/auth scenarios where tokens expire.
+    /// The refresher is called before every MCP operation.
+    ///
+    /// # Example
+    /// ```no_run
+    /// use std::sync::Arc;
+    /// use std::time::{Duration, Instant};
+    /// use tokio::sync::RwLock;
+    /// use rmcp::transport::StreamableHttpClientTransport;
+    /// use rmcp::ServiceExt;
+    ///
+    /// let last_refresh = Arc::new(RwLock::new(Instant::now()));
+    /// let jwt_provider = Arc::new(MyJwtProvider::new());
+    ///
+    /// let refresher = {
+    ///     let last_refresh = last_refresh.clone();
+    ///     let jwt = jwt_provider.clone();
+    ///
+    ///     move || {
+    ///         let last_refresh = last_refresh.clone();
+    ///         let jwt = jwt.clone();
+    ///         async move {
+    ///             let mut last = last_refresh.write().await;
+    ///             if last.elapsed() < Duration::from_secs(50 * 60) {
+    ///                 return Ok(None); // Still valid
+    ///             }
+    ///
+    ///             let token = jwt.get_fresh_token().await?;
+    ///             let transport = StreamableHttpClientTransport::from_uri("https://backend/mcp")
+    ///                 .with_header("Authorization", format!("Bearer {}", token));
+    ///             let service = ().serve(transport).await?;
+    ///             *last = Instant::now();
+    ///             Ok(Some(service))
+    ///         }
+    ///     }
+    /// };
+    ///
+    /// let initial_service = create_initial_service().await?;
+    /// manager.add_service_with_refresher("my-server", initial_service, refresher).await?;
+    /// ```
+    pub async fn add_service_with_refresher<F, Fut>(
+        &self,
+        id: impl Into<String>,
+        initial_service: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+        refresher: F,
+    ) -> Result<()>
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: std::future::Future<
+                Output = Result<Option<rmcp::service::RunningService<rmcp::RoleClient, ()>>>,
+            > + Send
+            + 'static,
+    {
+        let id = id.into();
+
+        // Check if server already exists
+        if self.servers.read().await.contains_key(&id) {
+            return Err(anyhow!("MCP server '{}' already exists", id));
+        }
+
+        let server = Arc::new(MCPServer::with_service_refresher(
+            id.clone(),
+            initial_service,
+            refresher,
+        ));
+
+        // Add to map
+        self.servers.write().await.insert(id.clone(), server);
+
+        tracing::info!(
+            "[MCPServerManager] Added MCP server '{}' with service refresher",
+            id
+        );
 
         Ok(())
     }
