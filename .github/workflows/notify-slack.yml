@@ -11,7 +11,7 @@ jobs:
     steps:
       - name: Send Slack notification
         run: |
-          curl -X POST ${{ secrets.SLACK_WEBHOOK_URL }} \
+          curl -X POST ${{ secrets.PRODUCT_UPDATES_SLACK_WEBHOOK_URL }} \
           -H 'Content-Type: application/json' \
           -d '{
             "text": "New commit to *${{ github.repository }}*",
