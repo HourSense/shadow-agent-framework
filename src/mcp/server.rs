@@ -5,16 +5,12 @@
 use anyhow::{anyhow, Result};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::service::RunningService;
-use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::RoleClient;
 use serde_json::{Map, Value};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-
-/// The concrete transport type we use for HTTP MCP connections
-pub type HttpClientTransport = StreamableHttpClientTransport<reqwest::Client>;
 
 /// Type alias for service refresher callback future
 pub type ServiceRefreshFuture =
