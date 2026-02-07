@@ -118,21 +118,21 @@ impl StandardAgent {
                             tracing::error!("[StandardAgent] Error processing turn: {}", e);
                             internals.send_error(format!("Error: {}", e));
                         }
+
+                        if self.config.auto_name_conversation && internals.context.current_turn == 0
+                        {
+                            let session_id = {
+                                let session = internals.session.read().await;
+                                session.session_id().to_string()
+                            };
+                            let has_name = internals.session.read().await.has_conversation_name();
+                            if !has_name {
+                                self.generate_conversation_name(&mut internals, Some(&session_id)).await;
+                            }
+                        }
                     }
                     // Signal turn complete
                     internals.send_done();
-
-                    if self.config.auto_name_conversation && internals.context.current_turn == 0
-                    {
-                        let session_id = {
-                            let session = internals.session.read().await;
-                            session.session_id().to_string()
-                        };
-                        let has_name = internals.session.read().await.has_conversation_name();
-                        if !has_name {
-                            self.generate_conversation_name(&mut internals, Some(&session_id)).await;
-                        }
-                    }
 
                     // Persist session if configured
                     if self.config.auto_save_session {
