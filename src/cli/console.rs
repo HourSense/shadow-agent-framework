@@ -152,7 +152,7 @@ impl Console {
         println!("{}", "─".repeat(60).yellow());
         println!(
             "{} The agent wants to use tool: {}",
-            "⚠️ Permission Required".yellow().bold(),
+            "Permission Required".yellow().bold(),
             request.tool_name.color(self.tool_color).bold()
         );
         println!();

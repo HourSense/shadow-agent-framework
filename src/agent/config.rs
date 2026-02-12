@@ -81,6 +81,26 @@ pub struct AgentConfig {
     /// Set to true only if you need the performance optimization and understand
     /// that security/monitoring hooks may be bypassed.
     pub hook_short_circuit: bool,
+
+    /// **DANGEROUS:** Skip all permission checks.
+    ///
+    /// When enabled, tools execute without asking for user permission.
+    /// Hooks still run and can block operations, but the permission system is bypassed.
+    ///
+    /// **Default: false** (safe - permissions are enforced)
+    ///
+    /// **Use cases:**
+    /// - Automated workflows where user cannot approve
+    /// - Testing environments
+    /// - Trusted agent scenarios
+    ///
+    /// **Security implications:**
+    /// - Tools execute without user approval
+    /// - Global/local/session permission rules are ignored
+    /// - Hooks are your only safety mechanism
+    ///
+    /// This can be changed at runtime via `AgentHandle::set_dangerous_skip_permissions()`.
+    pub dangerous_skip_permissions: bool,
 }
 
 impl AgentConfig {
@@ -100,6 +120,7 @@ impl AgentConfig {
             enable_prompt_caching: true,
             naming_llm: None,
             hook_short_circuit: false, // Safe default: all hooks run
+            dangerous_skip_permissions: false, // Safe default: permissions enforced
         }
     }
 
@@ -270,7 +291,7 @@ impl AgentConfig {
     /// When true:
     /// - First hook to return `Deny` stops execution
     /// - Later hooks don't run (performance optimization)
-    /// - ⚠️ Security hooks might not run if bypassed by earlier hooks
+    /// - Security hooks might not run if bypassed by earlier hooks
     ///
     /// # Example
     ///
@@ -286,6 +307,34 @@ impl AgentConfig {
     /// ```
     pub fn with_hook_short_circuit(mut self, enabled: bool) -> Self {
         self.hook_short_circuit = enabled;
+        self
+    }
+
+    /// **DANGEROUS:** Skip all permission checks
+    ///
+    /// **Default: false** (safe - permissions are enforced)
+    ///
+    /// When enabled:
+    /// - Tools execute without asking for user permission
+    /// - Global/local/session permission rules are bypassed
+    /// - Hooks still run and can block operations
+    /// - Can be changed at runtime via `AgentHandle::set_dangerous_skip_permissions()`
+    ///
+    /// **Only enable if:**
+    /// - Running in automated/testing environment
+    /// - You trust the agent completely
+    /// - You have hooks configured for security
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Automated workflow mode
+    /// let config = AgentConfig::new("...")
+    ///     .with_dangerous_skip_permissions(true)
+    ///     .with_hooks(security_hooks);  // Still use hooks for safety!
+    /// ```
+    pub fn with_dangerous_skip_permissions(mut self, enabled: bool) -> Self {
+        self.dangerous_skip_permissions = enabled;
         self
     }
 
@@ -319,6 +368,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("enable_prompt_caching", &self.enable_prompt_caching)
             .field("naming_llm", &self.naming_llm.as_ref().map(|l| l.model()))
             .field("hook_short_circuit", &self.hook_short_circuit)
+            .field("dangerous_skip_permissions", &self.dangerous_skip_permissions)
             .finish()
     }
 }

@@ -188,7 +188,7 @@ impl HookRegistry {
     ///
     /// - When short_circuit_on_deny = true: Stops on first Deny
     ///   - Performance optimization
-    ///   - ⚠️ Later hooks may not run
+    ///   - Later hooks may not run
     ///
     /// Results are combined with priority:
     /// - If ANY hook said Deny → DENY (most restrictive wins)

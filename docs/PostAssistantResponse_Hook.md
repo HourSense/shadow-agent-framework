@@ -292,7 +292,7 @@ hooks.add(HookEvent::PostAssistantResponse, |ctx| {
 });
 ```
 
-⚠️ **Note**: Modifying history requires async session access and should be done carefully to avoid breaking the conversation flow.
+**Note**: Modifying history requires async session access and should be done carefully to avoid breaking the conversation flow.
 
 ## Integration with Agent Config
 

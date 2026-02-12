@@ -11,7 +11,7 @@ pub mod error;
 pub mod output;
 pub mod state;
 
-pub use context::{AgentContext, ResourceMap};
+pub use context::{AgentContext, DangerousSkipPermissions, ResourceMap};
 pub use error::{FrameworkError, FrameworkResult};
 pub use output::{InputMessage, OutputChunk};
 pub use state::AgentState;

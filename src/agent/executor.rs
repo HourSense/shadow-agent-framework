@@ -80,6 +80,32 @@ impl ToolExecutor {
             }
         }
 
+        // Check if dangerous_skip_permissions is enabled (from session metadata)
+        let should_skip_permissions = {
+            let session = internals.session.read().await;
+            session
+                .get_custom("dangerous_skip_permissions")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+
+        if should_skip_permissions {
+            tracing::warn!(
+                "[Executor] DANGEROUS: Skipping permission check for {} (dangerous_skip_permissions enabled)",
+                tool_name
+            );
+            return Self::execute_with_hooks(
+                internals,
+                tools,
+                hooks,
+                tool_name,
+                tool_id,
+                &current_input,
+                hook_short_circuit,
+            )
+            .await;
+        }
+
         let input_str = current_input.to_string();
 
         // Get tool info for better permission prompts

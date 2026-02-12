@@ -6,6 +6,35 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
+use tokio::sync::RwLock;
+
+// ============================================================================
+// DangerousSkipPermissions - Runtime-changeable permission bypass flag
+// ============================================================================
+
+/// Runtime-changeable flag to skip all permission checks
+///
+/// This is stored as a resource in AgentContext and can be modified
+/// via AgentHandle::set_dangerous_skip_permissions().
+#[derive(Debug, Clone)]
+pub struct DangerousSkipPermissions(pub Arc<RwLock<bool>>);
+
+impl DangerousSkipPermissions {
+    /// Create with initial value
+    pub fn new(enabled: bool) -> Self {
+        Self(Arc::new(RwLock::new(enabled)))
+    }
+
+    /// Check if permissions should be skipped
+    pub async fn is_enabled(&self) -> bool {
+        *self.0.read().await
+    }
+
+    /// Set whether to skip permissions
+    pub async fn set_enabled(&self, enabled: bool) {
+        *self.0.write().await = enabled;
+    }
+}
 
 // ============================================================================
 // ResourceMap - Type-safe container for agent-specific resources

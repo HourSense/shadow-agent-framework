@@ -247,6 +247,46 @@ impl AgentHandle {
         session.get_custom(key).cloned()
     }
 
+    /// **DANGEROUS:** Enable or disable permission checks at runtime
+    ///
+    /// When enabled, tools execute without asking for user permission.
+    /// Hooks still run and can block operations.
+    ///
+    /// **Use with extreme caution!**
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Enable dangerous mode for automated workflow
+    /// handle.set_dangerous_skip_permissions(true).await?;
+    ///
+    /// // Re-enable permissions
+    /// handle.set_dangerous_skip_permissions(false).await?;
+    /// ```
+    pub async fn set_dangerous_skip_permissions(&self, enabled: bool) -> FrameworkResult<()> {
+        if enabled {
+            tracing::warn!(
+                "[AgentHandle] DANGEROUS MODE ENABLED for '{}': Permission checks disabled!",
+                self.session_id
+            );
+        } else {
+            tracing::info!(
+                "[AgentHandle] Permission checks re-enabled for '{}'",
+                self.session_id
+            );
+        }
+
+        self.set_custom_metadata("dangerous_skip_permissions", enabled).await
+    }
+
+    /// Check if dangerous_skip_permissions is currently enabled
+    pub async fn is_dangerous_skip_permissions_enabled(&self) -> bool {
+        self.get_custom_metadata("dangerous_skip_permissions")
+            .await
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    }
+
     /// Get the conversation name
     pub async fn conversation_name(&self) -> Option<String> {
         let session = self.session.read().await;

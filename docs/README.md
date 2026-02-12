@@ -1839,6 +1839,81 @@ match chunk {
 }
 ```
 
+#### ⚠️ Dangerously Skipping ALL Permissions
+
+For automated workflows or testing environments where user approval isn't possible, you can completely bypass the permission system:
+
+**Configuration (at agent creation):**
+
+```rust
+let config = AgentConfig::new("You are a helpful assistant")
+    .with_tools(tools)
+    .with_dangerous_skip_permissions(true)  // ⚠️ DANGEROUS!
+    .with_hooks(security_hooks);  // Hooks still run for safety
+```
+
+**Runtime control (after agent is running):**
+
+```rust
+// Enable dangerous mode
+handle.set_dangerous_skip_permissions(true).await?;
+
+// Check current status
+let is_dangerous = handle.is_dangerous_skip_permissions_enabled().await;
+
+// Re-enable permissions
+handle.set_dangerous_skip_permissions(false).await?;
+```
+
+**How it works:**
+
+1. **Hooks still run** - Security hooks can still block dangerous operations
+2. **Permission system bypassed** - Global/local/session rules are ignored
+3. **No user prompts** - Tools execute immediately (if hooks allow)
+4. **Runtime changeable** - Can be toggled while agent is running
+
+**When to use:**
+
+- ✅ Automated CI/CD workflows
+- ✅ Testing environments
+- ✅ Trusted agent scenarios where you control all inputs
+- ✅ Background tasks where user cannot approve
+
+**When NOT to use:**
+
+- ❌ Interactive user-facing applications
+- ❌ Agents processing untrusted input
+- ❌ Production environments without hooks for safety
+- ❌ Any scenario where security matters
+
+**Example with safety hooks:**
+
+```rust
+let mut hooks = HookRegistry::new();
+
+// Block dangerous commands (runs even with permissions disabled)
+hooks.add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx| {
+    let cmd = ctx.tool_input.as_ref()
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if cmd.contains("rm -rf /") || cmd.contains("sudo") {
+        return HookResult::deny("Dangerous command blocked by security hook");
+    }
+    HookResult::none()
+})?;
+
+let config = AgentConfig::new("Automation agent")
+    .with_hooks(hooks)  // Security layer via hooks
+    .with_dangerous_skip_permissions(true);  // Bypass permission prompts
+```
+
+In this setup:
+- Permission prompts are disabled (automated workflow)
+- Hooks provide a security layer to block dangerous operations
+- Best of both worlds for automation
+
 ### Hooks Module
 
 Intercept and modify agent behavior at key points.
@@ -1857,7 +1932,7 @@ hooks.add(HookEvent::PreToolUse, |ctx: &mut HookContext| {
 })?;
 
 // PostToolUse - After successful execution
-hooks.add(HookEvent::PostToolUse, |ctx: &mut HookContext| {
+ks.add(HookEvent::PostToolUse, |ctx: &mut HookContext| {
     println!("Tool completed: {:?}", ctx.tool_result);
     HookResult::none()
 })?;
@@ -2626,6 +2701,7 @@ cargo run --example session_browser
 | `with_auto_name(bool)` | Auto-name conversations (default: true) |
 | `with_naming_llm(Arc<dyn LlmProvider>)` | Set separate LLM for naming (optional) |
 | `with_prompt_caching(bool)` | Enable/disable prompt caching (default: true) |
+| `with_dangerous_skip_permissions(bool)` | ⚠️ Skip ALL permission checks (default: false) |
 
 ### AgentHandle Methods
 
@@ -2643,6 +2719,8 @@ cargo run --example session_browser
 | `handle.get_custom_metadata(key)` | Get session metadata |
 | `handle.set_conversation_name(name)` | Set conversation name |
 | `handle.conversation_name()` | Get conversation name |
+| `handle.set_dangerous_skip_permissions(bool)` | ⚠️ Enable/disable permission checks at runtime |
+| `handle.is_dangerous_skip_permissions_enabled()` | Check if permissions are bypassed |
 
 ### Session Methods
 

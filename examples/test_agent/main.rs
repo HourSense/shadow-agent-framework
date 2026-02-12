@@ -238,7 +238,7 @@ async fn main() -> Result<()> {
         println!("💰 Prompt caching enabled: 90% cost savings on repeated content!");
         println!("   (Tools, system prompt, and conversation history are automatically cached)");
     } else {
-        println!("⚠️  Prompt caching disabled. To enable: run without --no-cache flag");
+        println!(" Prompt caching disabled. To enable: run without --no-cache flag");
     }
     println!("Type 'exit' or 'quit' to stop.\n");
 

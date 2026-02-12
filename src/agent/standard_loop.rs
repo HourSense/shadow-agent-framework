@@ -63,6 +63,16 @@ impl StandardAgent {
             let mut session = internals.session.write().await;
             session.set_model(self.llm.model());
             session.set_provider(self.llm.provider_name());
+
+            // Store dangerous_skip_permissions in session metadata for runtime access
+            session.set_custom("dangerous_skip_permissions", self.config.dangerous_skip_permissions);
+        }
+
+        // Log warning if dangerous mode is enabled
+        if self.config.dangerous_skip_permissions {
+            tracing::warn!(
+                "[StandardAgent] DANGEROUS MODE: Permission checks are DISABLED! Hooks are your only safety mechanism."
+            );
         }
 
         // Initialize debugger if enabled
