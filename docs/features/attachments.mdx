@@ -1,0 +1,138 @@
+---
+title: 'File Attachments'
+description: 'Send files in user messages using vibe-work-attachment tags with automatic processing and deduplication'
+---
+
+## Overview
+
+The SDK supports file attachments in user messages using `<vibe-work-attachment>` tags. The framework automatically reads and processes attached files.
+
+## Basic Usage
+
+```rust
+let user_input = r#"Analyze this code:
+<vibe-work-attachment>/path/to/main.rs</vibe-work-attachment>"#;
+
+handle.send_input(user_input).await?;
+```
+
+The framework will:
+1. Detect the attachment tag
+2. Read the file at the specified path
+3. Create a multi-block user message with both text and file content
+
+## Multiple Attachments
+
+```rust
+let input = r#"Compare these files:
+<vibe-work-attachment>./version1.rs</vibe-work-attachment>
+<vibe-work-attachment>./version2.rs</vibe-work-attachment>"#;
+
+handle.send_input(input).await?;
+```
+
+## Supported File Types
+
+| Type | Behavior |
+|---|---|
+| Text files | Read as UTF-8 with line numbers (max 2000 lines) |
+| Images (PNG, JPEG, GIF, WebP) | Base64-encoded for vision API (max 5MB) |
+| PDFs | Base64-encoded for document API (max 32MB) |
+| Directories | Lists contents with type, size, and name |
+
+## How It Works
+
+1. Framework detects `<vibe-work-attachment>` tags in user input
+2. Extracts file paths and deduplicates (same file referenced twice is only read once)
+3. Reads each file in order
+4. Creates multi-block user message with original text + content blocks
+5. If a file cannot be read, inserts an error message block instead
+
+### Message Structure
+
+```json
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "text",
+      "text": "Analyze this code:\n<vibe-work-attachment>./main.rs</vibe-work-attachment>"
+    },
+    {
+      "type": "text",
+      "text": "File: ./main.rs\n\n     1\tfn main() {\n     2\t    println!(\"Hello\");\n     3\t}"
+    }
+  ]
+}
+```
+
+## Deduplication
+
+Duplicate file references are detected by resolved absolute path:
+
+```rust
+let input = r#"Compare with original:
+<vibe-work-attachment>./main.rs</vibe-work-attachment>
+Also check for bugs:
+<vibe-work-attachment>./main.rs</vibe-work-attachment>"#;
+```
+
+The second occurrence receives: "Note: File ./main.rs was already attached above"
+
+## Path Resolution
+
+- **Absolute paths**: Used as-is
+- **Relative paths**: Resolved from the current working directory
+
+## Error Handling
+
+Individual attachment failures do not block the message:
+
+```rust
+let input = r#"Read these files:
+<vibe-work-attachment>./good.txt</vibe-work-attachment>
+<vibe-work-attachment>./missing.txt</vibe-work-attachment>"#;
+
+// Agent receives:
+// - Content of good.txt
+// - Error message for missing.txt
+```
+
+## Frontend Integration
+
+Tags are **preserved** in the message text, allowing frontends to parse and display attachment badges. A typical flow:
+
+1. User types `@main.rs` or drags a file
+2. Frontend converts to `<vibe-work-attachment>./main.rs</vibe-work-attachment>`
+3. Backend processes automatically via `handle.send_input(&message).await?`
+
+```typescript
+// Parse tags for UI display
+const regex = /<vibe-work-attachment>(.*?)<\/vibe-work-attachment>/g;
+```
+
+## Programmatic Access
+
+```rust
+use shadow_agent_sdk::helpers::process_attachments;
+
+let user_input = "Analyze <vibe-work-attachment>./file.txt</vibe-work-attachment>";
+let processed_message = process_attachments(user_input)?;
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Image & PDF Support"
+    href="/features/images-pdfs"
+  >
+    Details on image and PDF processing
+  </Card>
+  <Card
+    title="Tauri Integration"
+    href="/integration/tauri"
+  >
+    Building file attachment UI
+  </Card>
+</CardGroup>

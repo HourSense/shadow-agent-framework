@@ -1,0 +1,243 @@
+---
+title: 'Tauri Integration'
+description: 'Build desktop apps with Shadow Agent SDK and Tauri'
+---
+
+## Backend State
+
+```rust
+use std::sync::Arc;
+use tokio::sync::Mutex;
+use shadow_agent_sdk::llm::{AnthropicProvider, LlmProvider};
+
+pub struct AppState {
+    pub runtime: AgentRuntime,
+    pub llm: Arc<dyn LlmProvider>,
+    pub tools: Arc<ToolRegistry>,
+}
+
+impl AppState {
+    pub fn new() -> anyhow::Result<Self> {
+        let llm: Arc<dyn LlmProvider> = Arc::new(AnthropicProvider::from_env()?);
+
+        let mut tools = ToolRegistry::new();
+        tools.register(ReadTool::new()?);
+        tools.register(WriteTool::new()?);
+        tools.register(BashTool::new()?);
+
+        let runtime = AgentRuntime::with_global_rules(vec![
+            PermissionRule::allow_tool("Read"),
+        ]);
+
+        Ok(Self { runtime, llm, tools: Arc::new(tools) })
+    }
+}
+```
+
+## Commands
+
+### Create Agent
+
+```rust
+#[tauri::command]
+async fn create_agent(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    session_id: String,
+    name: String,
+    system_prompt: String,
+) -> Result<(), String> {
+    let state = state.lock().await;
+
+    let session = AgentSession::new(&session_id, "assistant", &name, "")
+        .map_err(|e| e.to_string())?;
+
+    let config = AgentConfig::new(&system_prompt)
+        .with_tools(state.tools.clone())
+        .with_streaming(true);
+
+    let agent = StandardAgent::new(config, state.llm.clone());
+
+    state.runtime.spawn(session, |i| agent.run(i)).await;
+
+    Ok(())
+}
+```
+
+### Send Message
+
+```rust
+#[tauri::command]
+async fn send_message(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    window: tauri::Window,
+    session_id: String,
+    message: String,
+) -> Result<(), String> {
+    let state = state.lock().await;
+
+    let handle = state.runtime.get(&session_id).await
+        .ok_or("Agent not found")?;
+
+    // Subscribe BEFORE sending
+    let mut rx = handle.subscribe();
+
+    handle.send_input(&message).await.map_err(|e| e.to_string())?;
+
+    // Forward output to frontend
+    tokio::spawn(async move {
+        while let Ok(chunk) = rx.recv().await {
+            let event = match &chunk {
+                OutputChunk::TextDelta(_) => "text-delta",
+                OutputChunk::ToolStart { .. } => "tool-start",
+                OutputChunk::ToolEnd { .. } => "tool-end",
+                OutputChunk::PermissionRequest { .. } => "permission-request",
+                OutputChunk::Done => "done",
+                _ => continue,
+            };
+
+            let _ = window.emit(event, &chunk);
+
+            if matches!(chunk, OutputChunk::Done) {
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+```
+
+### Send Permission
+
+```rust
+#[tauri::command]
+async fn send_permission(
+    state: tauri::State<'_, Arc<Mutex<AppState>>>,
+    session_id: String,
+    tool_name: String,
+    allowed: bool,
+    remember: bool,
+) -> Result<(), String> {
+    let state = state.lock().await;
+
+    let handle = state.runtime.get(&session_id).await
+        .ok_or("Agent not found")?;
+
+    handle.send_permission_response(tool_name, allowed, remember)
+        .await
+        .map_err(|e| e.to_string())
+}
+```
+
+### List Sessions
+
+```rust
+#[tauri::command]
+async fn list_sessions(top_level_only: bool) -> Result<Vec<SessionInfo>, String> {
+    let sessions = AgentSession::list_with_metadata(top_level_only)
+        .map_err(|e| e.to_string())?;
+
+    Ok(sessions.into_iter().map(|(id, meta)| SessionInfo {
+        session_id: id,
+        name: meta.name,
+        created_at: meta.created_at.to_rfc3339(),
+    }).collect())
+}
+```
+
+### Get History
+
+```rust
+#[tauri::command]
+async fn get_history(session_id: String) -> Result<Vec<Message>, String> {
+    AgentSession::get_history(&session_id).map_err(|e| e.to_string())
+}
+```
+
+## Frontend
+
+### Create Agent
+
+```typescript
+import { invoke } from '@tauri-apps/api/tauri';
+
+await invoke('create_agent', {
+  sessionId: 'chat-1',
+  name: 'My Assistant',
+  systemPrompt: 'You are helpful.',
+});
+```
+
+### Listen for Output
+
+```typescript
+import { listen } from '@tauri-apps/api/event';
+
+await listen('text-delta', (event) => {
+  appendText(event.payload);
+});
+
+await listen('permission-request', (event) => {
+  const { tool_name, action } = event.payload;
+  showDialog(tool_name, action, async (allowed, remember) => {
+    await invoke('send_permission', {
+      sessionId: 'chat-1',
+      toolName: tool_name,
+      allowed,
+      remember,
+    });
+  });
+});
+
+await listen('done', () => {
+  setLoading(false);
+});
+```
+
+### Send Message
+
+```typescript
+await invoke('send_message', {
+  sessionId: 'chat-1',
+  message: 'Hello!',
+});
+```
+
+### Load Sessions
+
+```typescript
+const sessions = await invoke('list_sessions', { topLevelOnly: true });
+```
+
+### Load History
+
+```typescript
+const history = await invoke('get_history', { sessionId: 'chat-1' });
+```
+
+## Subscribe Before Send
+
+Critical pattern:
+
+```rust
+// ✅ Correct
+let mut rx = handle.subscribe();
+handle.send_input("message").await?;
+
+// ❌ Wrong - will miss initial chunks
+handle.send_input("message").await?;
+let mut rx = handle.subscribe();
+```
+
+## Event Names
+
+Common events to listen for:
+
+- `text-delta` - Streaming text chunks
+- `thinking-delta` - Extended thinking (if enabled)
+- `tool-start` - Tool execution starting
+- `tool-end` - Tool execution complete
+- `permission-request` - Permission needed
+- `state-change` - Agent state changed
+- `done` - Turn complete
+- `error` - Error occurred

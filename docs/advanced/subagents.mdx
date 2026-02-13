@@ -1,0 +1,129 @@
+---
+title: 'Subagents'
+description: 'Spawn specialized agents from tools for complex multi-step tasks'
+---
+
+## Creating Subagent Sessions
+
+```rust
+let sub_session = AgentSession::new_subagent(
+    "sub-session-id",
+    "researcher",
+    "Research Helper",
+    "Finds information",
+    "parent-session-id",  // parent
+    "tool_use_123",       // parent tool use ID
+)?;
+```
+
+## Spawning from Tools
+
+```rust
+async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult> {
+    let parent_session = internals.session.session_id().to_string();
+    let tool_use_id = internals.context.current_tool_use_id
+        .clone()
+        .unwrap_or_default();
+
+    // Create subagent session
+    let sub_session = AgentSession::new_subagent(
+        format!("sub-{}", tool_use_id),
+        "researcher",
+        "Research Agent",
+        "Researches topics",
+        &parent_session,
+        &tool_use_id,
+    )?;
+
+    // Notify parent
+    internals.send(OutputChunk::SubAgentSpawned {
+        session_id: sub_session.session_id().to_string(),
+        agent_type: "researcher".to_string(),
+    });
+
+    // Get runtime and spawn
+    let runtime = internals.context.get_resource::<AgentRuntime>()
+        .ok_or_else(|| anyhow::anyhow!("Runtime not available"))?;
+
+    let config = AgentConfig::new("You are a researcher.");
+    let agent = StandardAgent::new(config, self.llm.clone());
+
+    let handle = runtime.spawn(sub_session, |i| agent.run(i)).await;
+
+    // Send task
+    handle.send_input("Research this topic").await?;
+
+    // Collect results
+    let mut rx = handle.subscribe();
+    let mut result = String::new();
+
+    while let Ok(chunk) = rx.recv().await {
+        match chunk {
+            OutputChunk::TextDelta(text) => result.push_str(&text),
+            OutputChunk::Done => break,
+            _ => {}
+        }
+    }
+
+    // Notify completion
+    internals.send(OutputChunk::SubAgentComplete {
+        session_id: handle.session_id().to_string(),
+        result: Some(result.clone()),
+    });
+
+    Ok(ToolResult::success(result))
+}
+```
+
+## Listening for Subagents
+
+```rust
+match chunk {
+    OutputChunk::SubAgentSpawned { session_id, agent_type } => {
+        println!("Subagent spawned: {} ({})", session_id, agent_type);
+    }
+
+    OutputChunk::SubAgentComplete { session_id, result } => {
+        println!("Subagent complete: {}", session_id);
+        if let Some(res) = result {
+            println!("Result: {}", res);
+        }
+    }
+
+    _ => {}
+}
+```
+
+## Session Hierarchy
+
+```rust
+// Get parent
+let parent_id = session.parent_session_id();  // Option<&str>
+
+// Get children
+let children = session.child_session_ids();  // &[String]
+
+// Check if subagent
+let is_sub = session.is_subagent();
+```
+
+## Listing Sessions
+
+```rust
+// List only top-level (no subagents)
+let top_level = AgentSession::list_top_level()?;
+
+// List all including subagents
+let all = AgentSession::list_all()?;
+
+// List with metadata
+let with_meta = AgentSession::list_with_metadata(true)?;  // true = top-level only
+```
+
+## Use Cases
+
+- Research tasks
+- Code generation with testing
+- Multi-step workflows
+- Specialized processing
+- Parallel task execution

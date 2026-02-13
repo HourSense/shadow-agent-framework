@@ -1,0 +1,88 @@
+---
+title: 'Extended Thinking'
+description: 'Enable Claude to reason deeply about complex problems with extended thinking mode'
+---
+
+## Overview
+
+Extended thinking allows Claude to engage in deeper reasoning before responding. When enabled, Claude thinks through problems step-by-step internally, and you can see the thinking process in real-time via streaming.
+
+<Info>
+Extended thinking is currently supported by the AnthropicProvider only.
+</Info>
+
+## Enabling Extended Thinking
+
+```rust
+let config = AgentConfig::new("You are a thoughtful assistant.")
+    .with_thinking(16000);  // Budget in tokens
+```
+
+The budget controls how many tokens Claude can use for thinking. Claude may use less than the budget depending on problem complexity.
+
+| Problem Type | Recommended Budget |
+|---|---|
+| Moderate complexity | 8,000-16,000 |
+| Complex reasoning | 16,000-32,000 |
+| Very difficult problems | 32,000-64,000 |
+
+<Warning>
+Larger budgets increase API costs. Choose the smallest budget that solves your problem.
+</Warning>
+
+## Processing Thinking Output
+
+When extended thinking is enabled, you receive additional chunk types:
+
+```rust
+let mut rx = handle.subscribe();
+handle.send_input("Solve this complex problem...").await?;
+
+while let Ok(chunk) = rx.recv().await {
+    match chunk {
+        OutputChunk::ThinkingDelta(text) => {
+            // Stream thinking in real-time
+            ui.append_thinking(&text);
+        }
+
+        OutputChunk::ThinkingComplete(full_thinking) => {
+            // Thinking phase complete
+            ui.show_thinking_complete();
+        }
+
+        OutputChunk::TextDelta(text) => {
+            // Regular response text
+            ui.append_response(&text);
+        }
+
+        OutputChunk::Done => break,
+        _ => {}
+    }
+}
+```
+
+Thinking blocks are also preserved in conversation history as `ContentBlock::Thinking`.
+
+## Limitations
+
+- **Provider support**: Only `AnthropicProvider` supports extended thinking.
+- **Non-streaming mode**: Interrupts are not detected during the thinking phase when streaming is disabled.
+- **Budget is a maximum**: Claude may use fewer tokens than the budget for simpler problems.
+- **Tool calls**: Extended thinking applies to LLM responses, not during tool execution.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Prompt Caching"
+    href="/features/prompt-caching"
+  >
+    Reduce costs with caching
+  </Card>
+  <Card
+    title="Streaming & History"
+    href="/features/streaming"
+  >
+    Handle thinking output
+  </Card>
+</CardGroup>

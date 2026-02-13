@@ -1,0 +1,140 @@
+---
+title: 'Hooks'
+description: 'Intercept and modify agent behavior at runtime'
+---
+
+## Hook Events
+
+```rust
+use shadow_agent_sdk::hooks::{HookRegistry, HookEvent, HookContext, HookResult};
+
+let mut hooks = HookRegistry::new();
+
+// PreToolUse - Before tool executes
+hooks.add(HookEvent::PreToolUse, |ctx: &mut HookContext| {
+    HookResult::none()
+})?;
+
+// PostToolUse - After successful execution
+hooks.add(HookEvent::PostToolUse, |ctx: &mut HookContext| {
+    HookResult::none()
+})?;
+
+// PostToolUseFailure - After tool fails
+hooks.add(HookEvent::PostToolUseFailure, |ctx: &mut HookContext| {
+    HookResult::none()
+})?;
+
+// UserPromptSubmit - When user sends message
+hooks.add(HookEvent::UserPromptSubmit, |ctx: &mut HookContext| {
+    HookResult::none()
+})?;
+```
+
+## Pattern Matching
+
+```rust
+// Match specific tools
+hooks.add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx| {
+    HookResult::none()
+})?;
+
+// Regex patterns
+hooks.add_with_pattern(HookEvent::PreToolUse, "Write|Edit", |ctx| {
+    HookResult::none()
+})?;
+```
+
+## Hook Results
+
+```rust
+HookResult::allow()           // Skip permission check, execute
+HookResult::deny("reason")    // Block execution
+HookResult::ask()             // Use normal permission flow
+HookResult::none()            // Continue normal flow
+```
+
+## Result Priority
+
+When multiple hooks return different results:
+
+```
+Deny > Allow > Ask > None
+```
+
+All hooks run (no short-circuit by default). If ANY returns Deny, final is Deny.
+
+## Block Dangerous Commands
+
+```rust
+hooks.add_with_pattern(HookEvent::PreToolUse, "Bash", |ctx| {
+    let cmd = ctx.tool_input.as_ref()
+        .and_then(|v| v.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    if cmd.contains("rm -rf /") || cmd.contains("sudo") {
+        return HookResult::deny("Blocked");
+    }
+    HookResult::none()
+})?;
+```
+
+## Modify Tool Input
+
+```rust
+hooks.add(HookEvent::PreToolUse, |ctx: &mut HookContext| {
+    if let Some(input) = ctx.tool_input.as_mut() {
+        if let Some(obj) = input.as_object_mut() {
+            obj.insert("modified".to_string(), json!(true));
+        }
+    }
+    HookResult::none()
+})?;
+```
+
+## Audit Logging
+
+```rust
+hooks.add(HookEvent::PreToolUse, |ctx| {
+    audit_log(ctx.tool_name, ctx.tool_input);
+    HookResult::none()
+})?;
+```
+
+## Auto-Approve Safe Tools
+
+```rust
+hooks.add_with_pattern(HookEvent::PreToolUse, "Read|Glob|Grep", |_| {
+    HookResult::allow()  // Skip permissions
+})?;
+```
+
+## HookContext Fields
+
+```rust
+pub struct HookContext {
+    pub tool_name: Option<String>,
+    pub tool_input: Option<Value>,
+    pub tool_result: Option<ToolResult>,
+    pub user_prompt: Option<String>,
+    pub error: Option<String>,
+}
+```
+
+## Short-Circuit Mode
+
+```rust
+let config = AgentConfig::new("...")
+    .with_hooks(hooks)
+    .with_hook_short_circuit(true);  // Stop on first Deny
+```
+
+Default is false (all hooks run).
+
+## Usage
+
+```rust
+let config = AgentConfig::new("...")
+    .with_hooks(Arc::new(hooks));
+```

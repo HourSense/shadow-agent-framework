@@ -1,0 +1,235 @@
+---
+title: 'Built-in Tools'
+description: 'Reference for all built-in tools - file operations, shell execution, and task management'
+---
+
+## Overview
+
+The SDK includes built-in tools that cover common agent operations:
+
+- **File Operations**: Read, Write, Edit, Glob, Grep
+- **Shell Execution**: Bash
+- **Task Management**: TodoWrite
+- **User Interaction**: AskUserQuestion
+
+All built-in tools are available in the `shadow_agent_sdk::tools::common` module.
+
+## Registering Built-in Tools
+
+```rust
+use shadow_agent_sdk::tools::{ToolRegistry, common::*};
+use std::sync::Arc;
+
+let mut tools = ToolRegistry::new();
+
+// File operations
+tools.register(ReadTool::new()?);
+tools.register(WriteTool::new()?);
+tools.register(EditTool::new()?);
+tools.register(GlobTool::new()?);
+tools.register(GrepTool::new()?);
+
+// Shell
+tools.register(BashTool::new()?);
+
+// Task management
+tools.register(TodoWriteTool::new()?);
+
+// User interaction
+tools.register(AskUserQuestionTool::new());
+
+let tools = Arc::new(tools);
+```
+
+## ReadTool
+
+Reads files from the filesystem with line numbers. Supports text files, images (PNG, JPEG, GIF, WebP up to 5MB), and PDFs (up to 32MB).
+
+### Parameters
+
+```rust
+{
+  "file_path": String,      // Required: Path to file
+  "offset": Option<usize>,  // Optional: Start line (1-indexed)
+  "limit": Option<usize>    // Optional: Number of lines (default: 2000)
+}
+```
+
+### Examples
+
+```json
+// Read entire file
+{ "file_path": "./src/main.rs" }
+
+// Read with pagination
+{ "file_path": "./large-file.txt", "offset": 100, "limit": 50 }
+
+// Read image (auto-detected by extension)
+{ "file_path": "./screenshot.png" }
+```
+
+<Info>
+The Read tool automatically detects file type by extension and handles text, images, and PDFs appropriately.
+</Info>
+
+**Permissions**: Required for each file read.
+
+## WriteTool
+
+Creates or overwrites files. Creates parent directories if needed.
+
+### Parameters
+
+```rust
+{
+  "file_path": String,  // Required: Path to file
+  "content": String     // Required: Content to write
+}
+```
+
+<Warning>
+WriteTool overwrites files without confirmation. Use EditTool for safer modifications to existing files.
+</Warning>
+
+**Permissions**: Required for each file write.
+
+## EditTool
+
+Edits existing files using exact string replacement.
+
+### Parameters
+
+```rust
+{
+  "file_path": String,      // Required: Path to file
+  "old_string": String,     // Required: Text to find
+  "new_string": String,     // Required: Replacement text
+  "replace_all": bool       // Optional: Replace all occurrences (default: false)
+}
+```
+
+**Behavior**:
+- Matches exact strings (not regex)
+- Fails if `old_string` not found
+- Fails if `old_string` appears multiple times (unless `replace_all` is true)
+
+**Permissions**: Required for each file edit.
+
+## GlobTool
+
+Finds files matching glob patterns. Results sorted by modification time (most recent first).
+
+### Parameters
+
+```rust
+{
+  "pattern": String,         // Required: Glob pattern
+  "path": Option<String>     // Optional: Base directory (default: cwd)
+}
+```
+
+### Glob Patterns
+
+- `*` matches any characters except `/`
+- `**` matches any characters including `/`
+- `?` matches single character
+- `[abc]` matches one of a, b, or c
+- `{foo,bar}` matches foo or bar
+
+**Permissions**: Safe tool -- no permission required.
+
+## GrepTool
+
+Searches file contents using regex patterns.
+
+### Parameters
+
+```rust
+{
+  "pattern": String,          // Required: Regex pattern
+  "path": Option<String>,     // Optional: File or directory to search
+  "glob": Option<String>,     // Optional: Filter files by glob pattern
+  "type": Option<String>,     // Optional: File type filter (js, py, rust, etc.)
+  "output_mode": String,      // Optional: "content" | "files_with_matches" | "count"
+  "case_insensitive": bool,   // Optional: Case insensitive search
+  "context": Option<usize>,   // Optional: Lines of context around matches
+}
+```
+
+**Permissions**: Safe tool -- no permission required.
+
+## BashTool
+
+Executes shell commands with configurable timeout.
+
+### Parameters
+
+```rust
+{
+  "command": String,             // Required: Command to execute
+  "timeout": Option<u64>,        // Optional: Timeout in milliseconds (default: 120000)
+  "description": Option<String>  // Optional: Human-readable description
+}
+```
+
+**Behavior**:
+- Executes in current working directory
+- Working directory persists between commands
+- Shell state does not persist (use `&&` to chain)
+- Captures both stdout and stderr
+
+<Warning>
+BashTool is dangerous and always requires permission. Commands have full system access.
+</Warning>
+
+## TodoWriteTool
+
+Manages task lists for the agent. Supports create, update, complete, and list actions.
+
+### Parameters
+
+```rust
+{
+  "action": String,       // Required: "create" | "update" | "complete" | "list"
+  "task_id": Option<u32>, // Required for update/complete
+  "title": Option<String>,
+  "description": Option<String>
+}
+```
+
+**Permissions**: Safe tool -- no permission required.
+
+## AskUserQuestionTool
+
+Asks users multiple-choice questions during execution. See [Ask User Questions](/features/ask-user-questions) for details.
+
+**Permissions**: Safe tool -- no permission required.
+
+## Custom Base Directories
+
+Some tools support custom base directories for security:
+
+```rust
+let read_tool = ReadTool::with_base_dir("/restricted/path");
+tools.register(read_tool);
+
+let write_tool = WriteTool::with_base_dir("/output/directory");
+tools.register(write_tool);
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Custom Tools"
+    href="/tools/custom"
+  >
+    Create your own tools
+  </Card>
+  <Card
+    title="Hooks"
+    href="/hooks/overview"
+  >
+    Modify tool behavior
+  </Card>
+</CardGroup>
