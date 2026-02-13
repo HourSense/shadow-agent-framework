@@ -1,0 +1,132 @@
+---
+title: 'LLM Providers'
+description: 'Pluggable LLM backends - Anthropic, Gemini, and custom providers'
+---
+
+## Provider Trait
+
+All providers implement `LlmProvider`:
+
+```rust
+use shadow_agent_sdk::llm::{LlmProvider, AnthropicProvider, GeminiProvider};
+
+let anthropic: Arc<dyn LlmProvider> = Arc::new(AnthropicProvider::from_env()?);
+let gemini: Arc<dyn LlmProvider> = Arc::new(GeminiProvider::from_env()?);
+
+let agent = StandardAgent::new(config, anthropic);
+```
+
+## AnthropicProvider
+
+```rust
+use shadow_agent_sdk::llm::AnthropicProvider;
+
+// From env vars (ANTHROPIC_API_KEY, ANTHROPIC_MODEL)
+let llm = AnthropicProvider::from_env()?;
+
+// Explicit key and model
+let llm = AnthropicProvider::new("sk-ant-...")?
+    .with_model("claude-sonnet-4-5@20250929");
+
+// Custom max tokens
+let llm = AnthropicProvider::from_env()?
+    .with_max_tokens(8192);
+```
+
+### Auth Refresh
+
+```rust
+use shadow_agent_sdk::llm::{AuthProvider, AuthConfig};
+
+struct MyAuthProvider;
+
+#[async_trait]
+impl AuthProvider for MyAuthProvider {
+    async fn get_auth(&self) -> anyhow::Result<AuthConfig> {
+        let token = refresh_jwt_token().await?;
+        Ok(AuthConfig::new(token))
+    }
+}
+
+let llm = AnthropicProvider::with_auth_provider_boxed(Arc::new(MyAuthProvider));
+```
+
+## GeminiProvider
+
+```rust
+use shadow_agent_sdk::llm::GeminiProvider;
+
+// From env vars (GEMINI_API_KEY, GEMINI_MODEL)
+let llm = GeminiProvider::from_env()?;
+
+// Explicit key and model
+let llm = GeminiProvider::new("api-key")?
+    .with_model("gemini-2.0-flash-exp");
+```
+
+## SwappableLlmProvider
+
+Change LLM at runtime:
+
+```rust
+use shadow_agent_sdk::llm::SwappableLlmProvider;
+
+let swappable = Arc::new(SwappableLlmProvider::new(anthropic_provider));
+
+// Use with agent
+let agent = StandardAgent::new(config, swappable.clone());
+
+// Swap provider later
+swappable.swap(gemini_provider).await;
+```
+
+## Extended Thinking
+
+Only supported by AnthropicProvider:
+
+```rust
+use shadow_agent_sdk::llm::ThinkingConfig;
+
+let config = AgentConfig::new("...")
+    .with_thinking(16000);  // Budget in tokens
+
+// Or with config object
+let config = AgentConfig::new("...")
+    .with_thinking_config(ThinkingConfig::enabled(32000));
+```
+
+## Message Types
+
+```rust
+use shadow_agent_sdk::llm::{Message, ContentBlock};
+
+let msg = Message::user("Hello");
+let msg = Message::assistant("Hi");
+
+// With blocks
+let msg = Message::user_with_blocks(vec![
+    ContentBlock::text("Analyze this"),
+    ContentBlock::image(image_data, "image/png"),
+]);
+```
+
+## Content Blocks
+
+```rust
+match &message.content {
+    MessageContent::Blocks(blocks) => {
+        for block in blocks {
+            match block {
+                ContentBlock::Text { text } => {},
+                ContentBlock::ToolUse { id, name, input } => {},
+                ContentBlock::ToolResult { tool_use_id, content, is_error } => {},
+                ContentBlock::Thinking { thinking, .. } => {},
+                ContentBlock::Image { source } => {},
+                ContentBlock::Document { source, .. } => {},
+                _ => {}
+            }
+        }
+    }
+    _ => {}
+}
+```

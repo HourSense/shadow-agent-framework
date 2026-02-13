@@ -1,0 +1,107 @@
+---
+title: 'Prompt Caching'
+description: 'Reduce API costs by up to 90% with automatic prompt caching'
+---
+
+## Overview
+
+Prompt caching reuses previously processed prompt content, reducing API costs and improving latency. The SDK **enables this automatically** for all agents.
+
+<Info>
+Prompt caching is enabled by default. No configuration needed.
+</Info>
+
+## Cost Savings
+
+- **Cache read tokens**: 10% of regular price (90% discount)
+- **Cache write tokens**: 25% more than regular price
+- **Net effect**: Savings increase with conversation length, reaching 75%+ for 10+ turn conversations
+
+## How It Works
+
+The SDK automatically adds cache breakpoints at three locations:
+
+1. **System Prompt** -- your agent's instructions (static)
+2. **Tool Definitions** -- all tool schemas (rarely change)
+3. **Conversation History** -- the growing message history (last content block)
+
+Cache entries are valid for **5 minutes**. Each cache read refreshes the timer.
+
+### When Caching Helps Most
+
+- **Long conversations**: More turns = more savings
+- **Many tools**: Large tool definitions cached once
+- **Batch processing**: Multiple similar requests in same session
+- **Active sessions**: Continuous conversation within 5 minutes
+
+## Usage
+
+Caching is enabled by default:
+
+```rust
+let config = AgentConfig::new("You are helpful")
+    .with_tools(tools);  // Caching automatically enabled
+
+let agent = StandardAgent::new(config, llm);
+```
+
+To disable (not recommended):
+
+```rust
+let config = AgentConfig::new("You are helpful")
+    .with_prompt_caching(false);
+```
+
+## Monitoring
+
+Enable debug mode to see cache metrics:
+
+```rust
+let config = AgentConfig::new("You are helpful")
+    .with_debug(true);
+```
+
+Output:
+```
+Cache creation tokens: 5000
+Cache read tokens: 12000
+Input tokens: 500
+```
+
+Access metrics programmatically from the LLM response:
+
+```rust
+let response = llm.send_message(...).await?;
+
+println!("Cache creation: {}", response.usage.cache_creation_input_tokens);
+println!("Cache read: {}", response.usage.cache_read_input_tokens);
+println!("Regular input: {}", response.usage.input_tokens);
+```
+
+## Limitations
+
+- **Minimum cacheable prefix**: 1024 tokens
+- **Cache expiry**: 5 minutes of inactivity
+- **Dynamic prompts**: Changing the system prompt or tools between calls invalidates the cache
+- **Short conversations**: Overhead may exceed savings for single-turn interactions
+
+<Tip>
+Keep system prompts static and tool sets consistent to maximize cache hits. Avoid including timestamps or dynamic content in your system prompt.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Streaming & History"
+    href="/features/streaming"
+  >
+    Real-time output patterns
+  </Card>
+  <Card
+    title="AgentConfig API"
+    href="/api/agent-config"
+  >
+    All configuration options
+  </Card>
+</CardGroup>

@@ -46,9 +46,72 @@
           {
             "group": "Core Concepts",
             "pages": [
+              "concepts/architecture",
+              "concepts/runtime",
+              "concepts/sessions",
+              "concepts/message-flow",
+              "concepts/states",
               "concepts/agents",
               "concepts/tools",
               "concepts/mcp"
+            ]
+          },
+          {
+            "group": "Features",
+            "pages": [
+              "features/prompt-caching",
+              "features/streaming",
+              "features/interrupts",
+              "features/images-pdfs",
+              "features/attachments",
+              "features/ask-user-questions",
+              "features/extended-thinking"
+            ]
+          },
+          {
+            "group": "Tools",
+            "pages": [
+              "tools/built-in",
+              "tools/custom"
+            ]
+          },
+          {
+            "group": "Permissions",
+            "pages": [
+              "permissions/three-tier",
+              "permissions/handling",
+              "permissions/dangerous-skip"
+            ]
+          },
+          {
+            "group": "Hooks",
+            "pages": [
+              "hooks/overview"
+            ]
+          },
+          {
+            "group": "MCP",
+            "pages": [
+              "mcp/integration"
+            ]
+          },
+          {
+            "group": "LLM Providers",
+            "pages": [
+              "llm/providers"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/context-injection",
+              "advanced/subagents"
+            ]
+          },
+          {
+            "group": "Integration",
+            "pages": [
+              "integration/tauri"
             ]
           }
         ]
@@ -60,7 +123,9 @@
           {
             "group": "API Reference",
             "pages": [
-              "api-reference/introduction"
+              "api/agent-config",
+              "api/agent-handle",
+              "api/output-chunk"
             ]
           }
         ]

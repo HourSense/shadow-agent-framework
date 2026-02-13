@@ -1,0 +1,189 @@
+---
+title: 'OutputChunk Reference'
+description: 'All output variants from agents'
+---
+
+## Streaming Text
+
+### TextDelta
+
+```rust
+OutputChunk::TextDelta(String)
+```
+
+Streaming text token. Append to display.
+
+### TextComplete
+
+```rust
+OutputChunk::TextComplete(String)
+```
+
+Full text response (non-streaming mode).
+
+## Extended Thinking
+
+### ThinkingDelta
+
+```rust
+OutputChunk::ThinkingDelta(String)
+```
+
+Streaming thinking token.
+
+### ThinkingComplete
+
+```rust
+OutputChunk::ThinkingComplete(String)
+```
+
+Complete thinking block.
+
+## Tool Execution
+
+### ToolStart
+
+```rust
+OutputChunk::ToolStart {
+    id: String,
+    name: String,
+    input: Value,
+}
+```
+
+Tool execution starting.
+
+### ToolProgress
+
+```rust
+OutputChunk::ToolProgress {
+    id: String,
+    output: String,
+}
+```
+
+Tool progress update.
+
+### ToolEnd
+
+```rust
+OutputChunk::ToolEnd {
+    id: String,
+    result: ToolResult,
+}
+```
+
+Tool execution complete.
+
+## Permissions
+
+### PermissionRequest
+
+```rust
+OutputChunk::PermissionRequest {
+    tool_name: String,
+    action: String,
+    input: Value,
+    details: Option<String>,
+}
+```
+
+Permission needed for tool.
+
+## Subagents
+
+### SubAgentSpawned
+
+```rust
+OutputChunk::SubAgentSpawned {
+    session_id: String,
+    agent_type: String,
+}
+```
+
+Subagent created.
+
+### SubAgentOutput
+
+```rust
+OutputChunk::SubAgentOutput {
+    session_id: String,
+    chunk: Box<OutputChunk>,
+}
+```
+
+Subagent output forwarded.
+
+### SubAgentComplete
+
+```rust
+OutputChunk::SubAgentComplete {
+    session_id: String,
+    result: Option<String>,
+}
+```
+
+Subagent finished.
+
+## State & Control
+
+### StateChange
+
+```rust
+OutputChunk::StateChange(AgentState)
+```
+
+Agent state transition.
+
+### Status
+
+```rust
+OutputChunk::Status(String)
+```
+
+Status message.
+
+### Error
+
+```rust
+OutputChunk::Error(String)
+```
+
+Error occurred.
+
+### Done
+
+```rust
+OutputChunk::Done
+```
+
+Turn complete.
+
+## Ask User Questions
+
+### AskUserQuestion
+
+```rust
+OutputChunk::AskUserQuestion {
+    request_id: String,
+    questions: Vec<UserQuestion>,
+}
+```
+
+Agent asking multiple-choice questions.
+
+## Usage
+
+```rust
+while let Ok(chunk) = rx.recv().await {
+    match chunk {
+        OutputChunk::TextDelta(text) => print!("{}", text),
+        OutputChunk::ToolStart { name, .. } => println!("\nUsing {}", name),
+        OutputChunk::PermissionRequest { tool_name, action, .. } => {
+            show_permission_dialog(tool_name, action);
+        }
+        OutputChunk::Done => break,
+        _ => {}
+    }
+}
+```

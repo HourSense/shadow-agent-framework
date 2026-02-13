@@ -1,0 +1,263 @@
+---
+title: 'Creating Custom Tools'
+description: 'Build custom tools to extend agent capabilities'
+---
+
+## Overview
+
+Custom tools extend agent capabilities beyond the built-in tools. Any async Rust function can become a tool that the LLM can call.
+
+## The Tool Trait
+
+All tools implement the `Tool` trait:
+
+```rust
+#[async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn definition(&self) -> ToolDefinition;
+    fn get_info(&self, input: &Value) -> ToolInfo;
+    fn requires_permission(&self) -> bool;
+    async fn execute(
+        &self,
+        input: &Value,
+        internals: &mut AgentInternals,
+    ) -> anyhow::Result<ToolResult>;
+}
+```
+
+## Complete Example
+
+```rust
+use async_trait::async_trait;
+use shadow_agent_sdk::tools::{Tool, ToolResult, ToolInfo};
+use shadow_agent_sdk::llm::{ToolDefinition, types::CustomTool, types::ToolInputSchema};
+use shadow_agent_sdk::runtime::AgentInternals;
+use serde_json::{json, Value};
+
+pub struct WeatherTool;
+
+#[async_trait]
+impl Tool for WeatherTool {
+    fn name(&self) -> &str {
+        "GetWeather"
+    }
+
+    fn description(&self) -> &str {
+        "Get current weather for a location"
+    }
+
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::Custom(CustomTool {
+            name: self.name().to_string(),
+            description: Some(self.description().to_string()),
+            input_schema: ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: Some(json!({
+                    "location": {
+                        "type": "string",
+                        "description": "City name or coordinates"
+                    }
+                })),
+                required: Some(vec!["location".to_string()]),
+            },
+            tool_type: None,
+        })
+    }
+
+    fn get_info(&self, input: &Value) -> ToolInfo {
+        let location = input.get("location")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        ToolInfo {
+            name: self.name().to_string(),
+            action_description: format!("Get weather for {}", location),
+            details: None,
+        }
+    }
+
+    fn requires_permission(&self) -> bool {
+        false  // Safe read-only tool
+    }
+
+    async fn execute(
+        &self,
+        input: &Value,
+        internals: &mut AgentInternals,
+    ) -> anyhow::Result<ToolResult> {
+        let location = input.get("location")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing location parameter"))?;
+
+        let weather = fetch_weather(location).await?;
+
+        Ok(ToolResult::success(format!(
+            "Weather in {}: {}F, {}",
+            location,
+            weather.temperature,
+            weather.conditions
+        )))
+    }
+}
+```
+
+### Registration
+
+```rust
+let mut tools = ToolRegistry::new();
+tools.register(WeatherTool);
+tools.register(ReadTool::new()?);
+
+let config = AgentConfig::new("...")
+    .with_tools(Arc::new(tools));
+```
+
+## ToolResult Types
+
+```rust
+// Success
+ToolResult::success("Operation completed")
+
+// Error
+ToolResult::error("Failed to connect")
+
+// Image
+ToolResult::Image {
+    data: image_bytes,
+    media_type: "image/png".to_string(),
+}
+
+// Document
+ToolResult::Document {
+    data: pdf_bytes,
+    media_type: "application/pdf".to_string(),
+    description: "Report generated".to_string(),
+}
+```
+
+## Using AgentInternals
+
+The `internals` parameter provides access to agent context:
+
+```rust
+async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult> {
+    // Access session
+    let session_id = internals.context.session_id.clone();
+
+    // Send progress updates
+    internals.send(OutputChunk::ToolProgress {
+        id: internals.context.current_tool_use_id.clone().unwrap_or_default(),
+        output: "Processing...".to_string(),
+    });
+
+    // Access custom resources
+    if let Some(db) = internals.context.get_resource::<DatabasePool>() {
+        // Use database...
+    }
+
+    Ok(ToolResult::success("Done"))
+}
+```
+
+## Tools with State
+
+```rust
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+pub struct CachingWeatherTool {
+    cache: Arc<Mutex<HashMap<String, WeatherData>>>,
+    api_key: String,
+}
+
+impl CachingWeatherTool {
+    pub fn new(api_key: String) -> Self {
+        Self {
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            api_key,
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for CachingWeatherTool {
+    async fn execute(&self, input: &Value, internals: &mut AgentInternals) -> Result<ToolResult> {
+        let location = input.get("location")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing location"))?;
+
+        // Check cache
+        {
+            let cache = self.cache.lock().await;
+            if let Some(data) = cache.get(location) {
+                return Ok(ToolResult::success(format!("{:?}", data)));
+            }
+        }
+
+        // Fetch and cache
+        let weather = fetch_weather(location, &self.api_key).await?;
+
+        {
+            let mut cache = self.cache.lock().await;
+            cache.insert(location.to_string(), weather.clone());
+        }
+
+        Ok(ToolResult::success(format!("{:?}", weather)))
+    }
+
+    // ... other methods
+}
+```
+
+## Tools That Spawn Subagents
+
+See [Subagents](/advanced/subagents) for how to create tools that delegate work to specialized agents.
+
+## Testing Custom Tools
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_weather_tool() {
+        let tool = WeatherTool;
+
+        let input = json!({ "location": "San Francisco" });
+
+        let session = AgentSession::new("test", "test", "Test", "").unwrap();
+        let context = AgentContext::default();
+        let mut internals = AgentInternals::new(session, context);
+
+        let result = tool.execute(&input, &mut internals).await.unwrap();
+        assert!(matches!(result, ToolResult::Text(_)));
+    }
+
+    #[test]
+    fn test_tool_definition() {
+        let tool = WeatherTool;
+        assert_eq!(tool.name(), "GetWeather");
+        assert!(!tool.requires_permission());
+    }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Built-in Tools"
+    href="/tools/built-in"
+  >
+    Reference for existing tools
+  </Card>
+  <Card
+    title="Subagents"
+    href="/advanced/subagents"
+  >
+    Spawning subagents from tools
+  </Card>
+</CardGroup>

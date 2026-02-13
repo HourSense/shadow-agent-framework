@@ -1,0 +1,105 @@
+---
+title: 'Image & PDF Support'
+description: 'Vision and document understanding with automatic base64 encoding'
+---
+
+## Overview
+
+The Read tool supports images and PDFs for Claude's vision and document understanding capabilities. File type is detected automatically based on extension, and content is base64-encoded for the LLM.
+
+## Supported Formats
+
+| Type | Extensions | Max Size |
+|---|---|---|
+| Images | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp` | 5MB |
+| PDFs | `.pdf` | 32MB |
+| Text | All others | No limit (supports offset/limit) |
+
+## Usage
+
+File type is detected by extension -- no special handling needed:
+
+```rust
+// Images - automatically base64-encoded
+handle.send_input("What's in screenshot.png?").await?;
+
+// PDFs - automatically base64-encoded
+handle.send_input("Summarize quarterly-report.pdf").await?;
+
+// Multiple files
+handle.send_input("Compare design-v1.png and design-v2.png").await?;
+```
+
+## Tool Result Types
+
+The framework uses different content types internally:
+
+```rust
+pub enum ToolResultData {
+    Text(String),                    // Regular text files
+
+    Image {                          // PNG, JPEG, GIF, WebP
+        data: Vec<u8>,
+        media_type: String,          // "image/png", etc.
+    },
+
+    Document {                       // PDF files
+        data: Vec<u8>,
+        media_type: String,          // "application/pdf"
+        description: String,
+    },
+}
+```
+
+## Prompt Caching
+
+Images and PDFs support prompt caching automatically:
+
+```rust
+// First request: Image cached
+handle.send_input("Analyze screenshot.png").await?;
+
+// Second request within 5 min: Cache hit (90% savings)
+handle.send_input("What colors are used in screenshot.png?").await?;
+```
+
+<Info>
+The last content block gets cache control applied automatically. This reduces costs when analyzing the same files multiple times.
+</Info>
+
+## File Attachments
+
+Images and PDFs can also be sent via attachment tags:
+
+```rust
+let input = r#"Analyze this error:
+<vibe-work-attachment>./error.png</vibe-work-attachment>"#;
+
+handle.send_input(input).await?;
+```
+
+See [File Attachments](/features/attachments) for details.
+
+## Limitations
+
+- **Extension-based detection**: File type is determined by extension, not file contents.
+- **No streaming**: Files are read completely before processing.
+- **No image generation**: The SDK only supports reading/analyzing images.
+- **Provider support**: Image/PDF analysis requires Claude (AnthropicProvider). Other providers may not support these features.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="File Attachments"
+    href="/features/attachments"
+  >
+    Attachment tags for files
+  </Card>
+  <Card
+    title="Prompt Caching"
+    href="/features/prompt-caching"
+  >
+    Cache images/PDFs for cost savings
+  </Card>
+</CardGroup>

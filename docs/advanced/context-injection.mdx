@@ -1,0 +1,73 @@
+---
+title: 'Context Injection'
+description: 'Modify messages before each LLM call'
+---
+
+## Basic Injection
+
+```rust
+use shadow_agent_sdk::helpers::{ContextInjection, InjectionChain, FnInjection};
+
+let injection = FnInjection::new("add_timestamp", |internals, messages| {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    shadow_agent_sdk::helpers::inject_system_reminder(
+        messages,
+        &format!("Current time: {}", timestamp),
+    );
+});
+
+let config = AgentConfig::new("...")
+    .with_injection_chain(InjectionChain::new().add(injection));
+```
+
+## Chain Multiple
+
+```rust
+let mut chain = InjectionChain::new();
+
+chain.add_fn("add_timestamp", |internals, messages| {
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    inject_system_reminder(messages, &format!("Time: {}", timestamp));
+});
+
+chain.add_fn("add_turn", |internals, messages| {
+    let turn = internals.context.current_turn;
+    inject_system_reminder(messages, &format!("Turn: {}", turn));
+});
+
+let config = AgentConfig::new("...").with_injection_chain(chain);
+```
+
+## Helper Functions
+
+```rust
+use shadow_agent_sdk::helpers::{
+    prepend_to_first_user_message,
+    append_to_last_message,
+    inject_system_reminder,
+};
+
+// Prepend to first user message
+prepend_to_first_user_message(&mut messages, "IMPORTANT: ");
+
+// Append to last message
+append_to_last_message(&mut messages, "\nBe concise.");
+
+// Add system reminder
+inject_system_reminder(&mut messages, "User prefers detail.");
+```
+
+## Access Agent State
+
+```rust
+chain.add_fn("custom_context", |internals, messages| {
+    let session_id = &internals.context.session_id;
+    let turn = internals.context.current_turn;
+    let metadata = internals.session.metadata();
+
+    inject_system_reminder(
+        messages,
+        &format!("Session: {}, Turn: {}", session_id, turn),
+    );
+});
+```

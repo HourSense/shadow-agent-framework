@@ -1,0 +1,107 @@
+---
+title: 'Interrupt Handling'
+description: 'Graceful cancellation during streaming, permission waiting, and tool execution'
+---
+
+## Overview
+
+Shadow Agent SDK provides interrupt handling that allows users to gracefully stop agent execution at any point. When interrupted, the agent stops processing and adds a system message to the conversation history.
+
+## Sending an Interrupt
+
+```rust
+// Cancel current operation (agent stays alive)
+handle.interrupt().await?;
+
+// Can continue with new input after interrupting
+handle.send_input("New task").await?;
+```
+
+<Info>
+**Interrupt** cancels the current operation but keeps the agent alive. **Shutdown** (`handle.shutdown().await`) terminates the agent completely.
+</Info>
+
+## The Three Scenarios
+
+Interrupts behave differently depending on what the agent is doing:
+
+### 1. During LLM Streaming
+
+- **Preserves** partial text already streamed
+- **Discards** incomplete thinking blocks
+- **Removes** all tool calls (both completed and partial)
+- **Adds** `<system>User interrupted this message</system>` to response
+
+```rust
+let handle_clone = handle.clone();
+tokio::spawn(async move {
+    cancel_signal.await;
+    handle_clone.interrupt().await.ok();
+});
+
+let mut rx = handle.subscribe();
+handle.send_input("Write an essay").await?;
+
+while let Ok(chunk) = rx.recv().await {
+    match chunk {
+        OutputChunk::TextDelta(text) => print!("{}", text),
+        OutputChunk::Done => {
+            println!("\nCompleted (or interrupted)");
+            break;
+        }
+        _ => {}
+    }
+}
+```
+
+### 2. During Permission Waiting
+
+- **Returns** `ToolResult::error("Interrupted")` for the pending tool
+- **Adds** interrupt marker to history
+- **Ends** the turn (does not retry)
+
+```rust
+OutputChunk::PermissionRequest { tool_name, action, .. } => {
+    match ui.show_permission_dialog(&tool_name, &action).await {
+        PermissionResult::Allow => {
+            handle.send_permission_response(tool_name, true, false).await?;
+        }
+        PermissionResult::Cancel => {
+            handle.interrupt().await?;
+        }
+    }
+}
+```
+
+### 3. During Tool Execution
+
+- **Lets** the current tool complete (avoids half-written files or resource leaks)
+- **Returns** actual results for completed tools
+- **Returns** `ToolResult::error("Interrupted")` for unexecuted tools
+
+<Info>
+The currently executing tool always completes to avoid partial side effects.
+</Info>
+
+## Limitations
+
+- **Non-streaming mode**: Interrupts are not detected during the LLM call itself when streaming is disabled. The interrupt is processed after the full response arrives.
+- **Long-running tools**: Tools that take a long time complete fully before the interrupt is detected.
+- **Double interrupt**: Sending multiple interrupts is safe -- subsequent ones are no-ops if already interrupted.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Agent States"
+    href="/concepts/states"
+  >
+    Understand all agent states
+  </Card>
+  <Card
+    title="Streaming & History"
+    href="/features/streaming"
+  >
+    Dual-channel architecture
+  </Card>
+</CardGroup>

@@ -1,0 +1,135 @@
+---
+title: 'AgentConfig API'
+description: 'Configuration builder methods for agents'
+---
+
+## Basic Usage
+
+```rust
+let config = AgentConfig::new("You are a helpful assistant")
+    .with_tools(tools)
+    .with_streaming(true);
+
+let agent = StandardAgent::new(config, llm);
+```
+
+## Builder Methods
+
+### with_tools
+
+```rust
+.with_tools(Arc<ToolRegistry>)
+```
+
+Set available tools for the agent.
+
+### with_streaming
+
+```rust
+.with_streaming(bool)  // Default: true
+```
+
+Enable/disable streaming output.
+
+### with_debug
+
+```rust
+.with_debug(bool)  // Default: false
+```
+
+Enable debug logging to `sessions/{session_id}/debugger/`.
+
+### with_thinking
+
+```rust
+.with_thinking(u32)  // Budget in tokens
+```
+
+Enable extended thinking (Claude only). Budget: 8000, 16000, 32000, or 64000.
+
+### with_hooks
+
+```rust
+.with_hooks(Arc<HookRegistry>)
+```
+
+Set behavior hooks.
+
+### with_hook_short_circuit
+
+```rust
+.with_hook_short_circuit(bool)  // Default: false
+```
+
+Stop hook execution on first Deny.
+
+### with_max_tool_iterations
+
+```rust
+.with_max_tool_iterations(usize)
+```
+
+Limit consecutive tool call loops.
+
+### with_auto_save
+
+```rust
+.with_auto_save(bool)  // Default: true
+```
+
+Auto-save session after each turn.
+
+### with_injection_chain
+
+```rust
+.with_injection_chain(InjectionChain)
+```
+
+Set context injection chain.
+
+### with_auto_name
+
+```rust
+.with_auto_name(bool)  // Default: true
+```
+
+Automatically name conversations after first turn.
+
+### with_naming_llm
+
+```rust
+.with_naming_llm(Arc<dyn LlmProvider>)
+```
+
+Use separate LLM for naming (e.g., faster/cheaper model).
+
+### with_prompt_caching
+
+```rust
+.with_prompt_caching(bool)  // Default: true
+```
+
+Enable/disable prompt caching.
+
+### with_dangerous_skip_permissions
+
+```rust
+.with_dangerous_skip_permissions(bool)  // Default: false
+```
+
+Skip ALL permission checks. Use with security hooks.
+
+## Complete Example
+
+```rust
+let config = AgentConfig::new("You are a coding assistant")
+    .with_tools(tools)
+    .with_streaming(true)
+    .with_debug(false)
+    .with_thinking(16000)
+    .with_hooks(hooks)
+    .with_max_tool_iterations(10)
+    .with_auto_save(true)
+    .with_auto_name(true)
+    .with_prompt_caching(true);
+```
