@@ -787,6 +787,11 @@ pub struct Usage {
     /// Cache read tokens (if caching enabled)
     #[serde(default)]
     pub cache_read_input_tokens: Option<u32>,
+
+    /// Thinking tokens used (for extended thinking/reasoning)
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thoughts_token_count: Option<u32>,
 }
 
 // ============================================================================
