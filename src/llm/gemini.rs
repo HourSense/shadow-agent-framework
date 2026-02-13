@@ -153,6 +153,21 @@ struct GeminiGenerationConfig {
     max_output_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_config: Option<GeminiThinkingConfig>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiThinkingConfig {
+    /// Whether to include thought summaries in the response
+    include_thoughts: bool,
+    /// Thinking level (for Gemini 3 models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_level: Option<String>,
+    /// Thinking budget (numeric tokens, for Gemini 2.5 models)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking_budget: Option<i32>,
 }
 
 // Response types
@@ -695,6 +710,44 @@ impl GeminiProvider {
         }
     }
 
+    /// Convert internal ThinkingConfig to Gemini format
+    fn convert_thinking_config(&self, thinking: &Option<ThinkingConfig>) -> Option<GeminiThinkingConfig> {
+        thinking.as_ref().map(|config| {
+            // Detect model version to choose between level-based (Gemini 3) or budget-based (Gemini 2.5)
+            let is_gemini_3 = self.model.starts_with("gemini-3");
+
+            if is_gemini_3 {
+                // Gemini 3: Map numeric budget to thinking levels
+                let level = match config.budget_tokens {
+                    0 => "minimal",           // Disable/minimal thinking
+                    1..=512 => "minimal",     // Very low thinking
+                    513..=2048 => "low",      // Low thinking
+                    2049..=8192 => "medium",  // Medium thinking (Flash only, Pro will use closest)
+                    _ => "high",              // High thinking (8192+)
+                };
+
+                GeminiThinkingConfig {
+                    include_thoughts: true,
+                    thinking_level: Some(level.to_string()),
+                    thinking_budget: None,
+                }
+            } else {
+                // Gemini 2.5: Use numeric budget directly
+                let budget = if config.budget_tokens == 0 {
+                    Some(0) // Explicitly disable thinking
+                } else {
+                    Some(config.budget_tokens as i32)
+                };
+
+                GeminiThinkingConfig {
+                    include_thoughts: true,
+                    thinking_level: None,
+                    thinking_budget: budget,
+                }
+            }
+        })
+    }
+
     // ========================================================================
     // Format conversion: Gemini -> Internal (Anthropic)
     // ========================================================================
@@ -734,11 +787,13 @@ impl GeminiProvider {
             output_tokens: u.candidates_token_count,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            thoughts_token_count: u.thoughts_token_count,
         }).unwrap_or(Usage {
             input_tokens: 0,
             output_tokens: 0,
             cache_creation_input_tokens: None,
             cache_read_input_tokens: None,
+            thoughts_token_count: None,
         });
 
         Ok(MessageResponse {
@@ -953,11 +1008,13 @@ impl GeminiProvider {
                         output_tokens: u.candidates_token_count,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        thoughts_token_count: u.thoughts_token_count,
                     }).unwrap_or(Usage {
                         input_tokens: 0,
                         output_tokens: 0,
                         cache_creation_input_tokens: None,
                         cache_read_input_tokens: None,
+                        thoughts_token_count: None,
                     });
 
                     yield StreamEvent::MessageStart(MessageStartEvent {
@@ -1173,7 +1230,7 @@ impl GeminiProvider {
         system: &Option<SystemPrompt>,
         tools: &[ToolDefinition],
         tool_choice: &Option<ToolChoice>,
-        _thinking: &Option<ThinkingConfig>,
+        thinking: &Option<ThinkingConfig>,
     ) -> GeminiRequest {
         let contents = self.convert_messages(messages).await;
         let system_instruction = self.convert_system_prompt(system);
@@ -1184,6 +1241,8 @@ impl GeminiProvider {
             None
         };
 
+        let thinking_config = self.convert_thinking_config(thinking);
+
         GeminiRequest {
             contents,
             system_instruction,
@@ -1192,6 +1251,7 @@ impl GeminiProvider {
             generation_config: Some(GeminiGenerationConfig {
                 max_output_tokens: Some(self.max_tokens),
                 temperature: Some(1.0),
+                thinking_config,
             }),
         }
     }
